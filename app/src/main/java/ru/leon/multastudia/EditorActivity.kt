@@ -528,7 +528,7 @@ class EditorActivity : Activity(), CanvasHost {
     private fun pickEase() {
         val ks = activeKeys()
         val fid = currentFrame().id
-        EasePicker.show(this, ks?.easeAt(fid) ?: lastEase) { e ->
+        EasePicker.show(this, ks?.easeAt?.invoke(fid) ?: lastEase) { e ->
             lastEase = e
             if (ks != null && ks.has(fid)) { ks.setEase(fid, e); onKeysChanged(false) } else refreshKeyPanel()
             cv.invalidate()
@@ -651,9 +651,9 @@ class EditorActivity : Activity(), CanvasHost {
     }
 
     private fun updateKeyBadges() {
-        val tr = activeTrack()
+        val ks = activeKeys()
         p.frames.forEachIndexed { i, f ->
-            thumbKeyBadges.getOrNull(i)?.visibility = if (tr?.keyAt(f.id) != null) View.VISIBLE else View.GONE
+            thumbKeyBadges.getOrNull(i)?.visibility = if (ks != null && ks.has(f.id)) View.VISIBLE else View.GONE
         }
     }
 
