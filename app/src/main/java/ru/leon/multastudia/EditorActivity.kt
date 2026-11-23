@@ -42,7 +42,10 @@ class EditorActivity : Activity(), CanvasHost {
     private lateinit var moreBtn: IconButton
     private lateinit var settingsPanel: LinearLayout
     private lateinit var morePanel: LinearLayout
-    private lateinit var selectionBar: LinearLayout
+    private lateinit var bottomNormal: LinearLayout
+    private lateinit var bottomSel: LinearLayout
+    private val selButtons = ArrayList<IconButton>()
+    private lateinit var selPasteBtn: IconButton
     private lateinit var frameStrip: LinearLayout
     private lateinit var stripScroll: HorizontalScrollView
     private lateinit var layerBtn: TextView
@@ -141,17 +144,6 @@ class EditorActivity : Activity(), CanvasHost {
         settingsPanel.visibility = View.GONE; morePanel.visibility = View.GONE
         area.addView(toolsCol, FrameLayout.LayoutParams(MATCH, WRAP).apply { setMargins(dp(10f), dp(10f), dp(10f), 0) })
 
-        selectionBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-            background = rounded(C.PURPLE, dp(18f).toFloat()); setPadding(dp(6f), dp(2f), dp(6f), dp(2f))
-            visibility = View.GONE
-        }
-        selectionBar.addView(IconButton(this, Ico.CHECK, "Готово", 22f).apply { setOnClickListener { cv.commitFloat() } })
-        selectionBar.addView(IconButton(this, Ico.COPY, "Штамп", 22f).apply { setOnClickListener { cv.commitFloat(stamp = true) } })
-        selectionBar.addView(IconButton(this, Ico.FLIP, "Отразить", 22f).apply { setOnClickListener { cv.flipFloat() } })
-        selectionBar.addView(IconButton(this, Ico.TRASH, "Удалить", 22f).apply { setOnClickListener { cv.deleteFloat() } })
-        area.addView(selectionBar, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(12f) })
-
         root.addView(area, lp(MATCH, 0, 1f))
 
         // ---- плеер ----
@@ -198,6 +190,7 @@ class EditorActivity : Activity(), CanvasHost {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
             setBackgroundColor(C.BAR); setPadding(0, dp(2f), 0, dp(4f))
         }
+        bottomNormal = bottom
         undoBtn = IconButton(this, Ico.UNDO, "Отменить", 24f).apply { setOnClickListener { cv.doUndo(); refreshButtons() } }
         redoBtn = IconButton(this, Ico.REDO, "Вернуть", 24f).apply { setOnClickListener { cv.doRedo(); refreshButtons() } }
         val copyBtn = IconButton(this, Ico.COPY, "Копир.", 24f).apply { setOnClickListener { copyFrame() } }
@@ -206,6 +199,25 @@ class EditorActivity : Activity(), CanvasHost {
         val imgBtn = IconButton(this, Ico.IMAGE, "Картинка", 24f).apply { setOnClickListener { pickImage() } }
         for (b in listOf(undoBtn, redoBtn, copyBtn, pasteBtn, onionBtn, imgBtn)) bottom.addView(b, lp(0, WRAP, 1f))
         root.addView(bottom, lp(MATCH, WRAP))
+
+        // ---- нижняя панель лассо (как во Флиппе) ----
+        bottomSel = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            setBackgroundColor(C.BAR); setPadding(0, dp(2f), 0, dp(4f)); visibility = View.GONE
+        }
+        val sCopy = IconButton(this, Ico.COPY, "Копировать", 24f).apply {
+            setOnClickListener { if (cv.copyFloat()) { toastShort("Изображение скопировано"); refreshSelBar() } }
+        }
+        selPasteBtn = IconButton(this, Ico.PASTE, "Вставить", 24f).apply {
+            setOnClickListener { if (cv.pasteFloat()) toastShort("Изображение вставлено") }
+        }
+        val sFlipX = IconButton(this, Ico.FLIP, "Отразить X", 24f).apply { setOnClickListener { cv.flipFloatX() } }
+        val sFlipY = IconButton(this, Ico.FLIP_Y, "Отразить Y", 24f).apply { setOnClickListener { cv.flipFloatY() } }
+        val sDel = IconButton(this, Ico.TRASH, "Удалить", 24f).apply { setOnClickListener { cv.deleteFloat() } }
+        val sDone = IconButton(this, Ico.CHECK, "Готово", 24f).apply { setOnClickListener { cv.commitFloat() } }
+        selButtons.addAll(listOf(sCopy, sFlipX, sFlipY, sDel, sDone))
+        for (b in listOf(sCopy, selPasteBtn, sFlipX, sFlipY, sDel, sDone)) bottomSel.addView(b, lp(0, WRAP, 1f))
+        root.addView(bottomSel, lp(MATCH, WRAP))
 
         return root
     }
@@ -234,6 +246,7 @@ class EditorActivity : Activity(), CanvasHost {
         for ((k, b) in toolButtons) b.active = k == t
         moreBtn.active = t in listOf(Tool.LINE, Tool.RECT, Tool.OVAL, Tool.EYEDROP)
         hidePanels()
+        refreshSelBar()
     }
 
     private fun hidePanels() { settingsPanel.visibility = View.GONE; morePanel.visibility = View.GONE }
@@ -311,8 +324,25 @@ class EditorActivity : Activity(), CanvasHost {
     }
 
     override fun onFloatChanged(has: Boolean) {
-        selectionBar.visibility = if (has) View.VISIBLE else View.GONE
+        refreshSelBar()
     }
+
+    private fun refreshSelBar() {
+        val show = cv.tool == Tool.LASSO || cv.hasFloat
+        bottomSel.visibility = if (show) View.VISIBLE else View.GONE
+        bottomNormal.visibility = if (show) View.GONE else View.VISIBLE
+        for (b in selButtons) b.dimmed = !cv.hasFloat
+        selPasteBtn.dimmed = !cv.hasClip
+    }
+
+    override fun onFloatMenu() {
+        val items = arrayOf("Трансформация", "Перспектива")
+        AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Выделение")
+            .setSingleChoiceItems(items, if (cv.perspectiveMode) 1 else 0) { d, w -> cv.perspectiveMode = w == 1; d.dismiss() }
+            .show()
+    }
+
+    private fun toastShort(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
     override fun onColorPicked(color: Int, done: Boolean) {
         cv.brush.color = color
@@ -489,7 +519,7 @@ class EditorActivity : Activity(), CanvasHost {
     }
 
     private fun frameMenu() {
-        val items = arrayOf("Дублировать", "Новый пустой после", "Длительность (×${currentFrame().hold})…", "Сдвинуть влево", "Сдвинуть вправо", "Удалить кадр")
+        val items = arrayOf("Дублировать", "Новый пустой после", "Длительность (×${currentFrame().hold})…", "Сдвинуть влево", "Сдвинуть вправо", "Сделать обложкой", "Удалить кадр")
         AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Кадр ${frameIdx + 1}")
             .setItems(items) { _, w ->
                 when (w) {
@@ -498,7 +528,8 @@ class EditorActivity : Activity(), CanvasHost {
                     2 -> holdDialog()
                     3 -> moveFrame(-1)
                     4 -> moveFrame(1)
-                    5 -> AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Удалить кадр?")
+                    5 -> { p.coverId = currentFrame().id; p.preview(currentFrame()); p.saveMeta(); toastShort("Кадр стал обложкой") }
+                    6 -> AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Удалить кадр?")
                         .setPositiveButton("Удалить") { _, _ -> deleteFrame() }.setNegativeButton("Отмена", null).show()
                 }
             }.show()

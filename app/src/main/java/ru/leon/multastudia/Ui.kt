@@ -63,7 +63,7 @@ fun Context.sliderRow(title: String, min: Int, max: Int, value: Int, fmt: (Int) 
     return row
 }
 
-enum class Ico { CLOSE, BRUSH, ERASER, LASSO, FILL, TEXT, MORE, UNDO, REDO, COPY, PASTE, ONION, IMAGE, PLAY, PAUSE, PREV, NEXT, PLUS, SHARE, MENU, FIT, LAYERS, EYEDROP, LINE, RECT, OVAL, CHECK, FLIP, TRASH, EYE, EYE_OFF, UP, DOWN, GRID }
+enum class Ico { CLOSE, BRUSH, ERASER, LASSO, FILL, TEXT, MORE, UNDO, REDO, COPY, PASTE, ONION, IMAGE, PLAY, PAUSE, PREV, NEXT, PLUS, SHARE, MENU, FIT, LAYERS, EYEDROP, LINE, RECT, OVAL, CHECK, FLIP, FLIP_Y, TRASH, EYE, EYE_OFF, UP, DOWN, GRID }
 
 /** Иконки рисуются кодом — без картинок и без лишних библиотек. */
 class IconView(ctx: Context, var icon: Ico, var color: Int = C.TEXT) : View(ctx) {
@@ -151,7 +151,8 @@ class IconView(ctx: Context, var icon: Ico, var color: Int = C.TEXT) : View(ctx)
             Ico.RECT -> c.drawRect(5f, 7f, 19f, 17f, p)
             Ico.OVAL -> c.drawOval(RectF(4f, 6f, 20f, 18f), p)
             Ico.CHECK -> { path.moveTo(5f, 12f); path.lineTo(10f, 17f); path.lineTo(19f, 7f); c.drawPath(path, p) }
-            Ico.FLIP -> {
+            Ico.FLIP, Ico.FLIP_Y -> {
+                if (icon == Ico.FLIP_Y) c.rotate(90f, 12f, 12f)
                 c.drawLine(12f, 3f, 12f, 21f, p)
                 path.moveTo(9f, 6f); path.lineTo(3f, 17f); path.lineTo(9f, 17f); path.close()
                 path.moveTo(15f, 6f); path.lineTo(21f, 17f); path.lineTo(15f, 17f); path.close(); c.drawPath(path, p)

@@ -34,6 +34,8 @@ class Project(val dir: File) {
     var canvasH = 540
     var fps = 12
     var bgColor = Color.WHITE
+    /** Кадр-обложка для списка мультфильмов (0 — первый кадр). */
+    var coverId = 0
     val layers = mutableListOf<Layer>()
     val frames = mutableListOf<Frame>()
     private var nextId = 1
@@ -212,7 +214,7 @@ class Project(val dir: File) {
     private fun metaJson(): String {
         val o = JSONObject()
         o.put("name", name); o.put("w", canvasW); o.put("h", canvasH); o.put("fps", fps)
-        o.put("bg", bgColor); o.put("nextId", nextId)
+        o.put("bg", bgColor); o.put("nextId", nextId); o.put("cover", coverId)
         val la = JSONArray()
         for (l in layers) la.put(JSONObject().put("id", l.id).put("name", l.name).put("visible", l.visible).put("opacity", l.opacity))
         o.put("layers", la)
@@ -251,6 +253,7 @@ class Project(val dir: File) {
                 p.canvasW = o.getInt("w"); p.canvasH = o.getInt("h")
                 p.fps = o.optInt("fps", 12); p.bgColor = o.optInt("bg", Color.WHITE)
                 p.nextId = o.optInt("nextId", 1000)
+                p.coverId = o.optInt("cover", 0)
                 val la = o.getJSONArray("layers")
                 for (i in 0 until la.length()) {
                     val j = la.getJSONObject(i)
@@ -274,7 +277,10 @@ class Project(val dir: File) {
             return try {
                 val o = JSONObject(File(dir, "project.json").readText())
                 val fa = o.getJSONArray("frames")
-                val first = if (fa.length() > 0) File(dir, "p_${fa.getJSONObject(0).getInt("id")}.jpg") else null
+                val cover = o.optInt("cover", 0)
+                val coverFile = File(dir, "p_$cover.jpg")
+                val first = if (cover != 0 && coverFile.exists()) coverFile
+                    else if (fa.length() > 0) File(dir, "p_${fa.getJSONObject(0).getInt("id")}.jpg") else null
                 o.optString("name", "Без названия") to first?.takeIf { it.exists() }
             } catch (e: Throwable) { null }
         }
