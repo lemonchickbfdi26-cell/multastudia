@@ -22,6 +22,9 @@ class Layer(val id: Int, var name: String) {
     /** Где на рисунке объекта что-то нарисовано (кэш). */
     var bounds: Rect? = null
     var boundsDirty = true
+    /** Слой-персонаж (риг «2D в 3D»). */
+    var rig: Rig? = null
+    val isRig get() = rig != null
 }
 
 class Frame(val id: Int) {
@@ -155,6 +158,32 @@ class Project(val dir: File) {
     fun cameraDefault() = Xf((marginX + canvasW / 2f), (marginY + canvasH / 2f))
 
     fun objectXf(l: Layer, idx: Int): Xf = l.track.eval(frames, idx, objectDefault(l))
+
+    fun rigDefault(): Pose {
+        val sc = canvasH * 0.78f / 415f
+        return Pose(marginX + canvasW / 2f, marginY + canvasH / 2f + 30f * sc).apply { scale = sc }
+    }
+
+    fun rigPose(l: Layer, idx: Int): Pose = l.rig!!.track.eval(frames, idx, rigDefault())
+
+    private fun partFile(layerId: Int, partId: Int) = File(dir, "rp_${layerId}_$partId.png")
+
+    fun savePart(layerId: Int, pt: Part) {
+        val b = pt.bmp ?: return
+        val copy = b.copy(Bitmap.Config.ARGB_8888, false)
+        val f = partFile(layerId, pt.id)
+        io.submit { dir.mkdirs(); FileOutputStream(f).use { copy.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+    }
+
+    fun deletePart(layerId: Int, pt: Part) { val f = partFile(layerId, pt.id); io.submit { f.delete() } }
+
+    private fun loadParts(l: Layer) {
+        val r = l.rig ?: return
+        for (pt in r.parts) {
+            val f = partFile(l.id, pt.id)
+            if (f.exists()) pt.bmp = try { BitmapFactory.decodeFile(f.absolutePath) } catch (e: Throwable) { null }
+        }
+    }
     fun cameraXf(idx: Int): Xf = camera.eval(frames, idx, cameraDefault())
 
     fun hasCellData(layerId: Int, frameId: Int): Boolean =
@@ -236,7 +265,10 @@ class Project(val dir: File) {
         val m = Matrix()
         for (l in layers) {
             if (!l.visible) continue
-            if (l.isObject) {
+            if (l.isRig) {
+                p.alpha = l.opacity
+                RigRender.draw(c, l.rig!!, rigPose(l, idx), p)
+            } else if (l.isObject) {
                 val bmp = peekCell(l.id, 0) ?: continue
                 val xf = objectXf(l, idx)
                 p.alpha = (l.opacity * xf.alpha).toInt().coerceIn(0, 255)
@@ -282,7 +314,7 @@ class Project(val dir: File) {
         o.put("bg", bgColor); o.put("nextId", nextId); o.put("cover", coverId)
         val la = JSONArray()
         for (l in layers) la.put(JSONObject().put("id", l.id).put("name", l.name).put("visible", l.visible).put("opacity", l.opacity)
-            .put("object", l.isObject).put("track", l.track.toJson()))
+            .put("object", l.isObject).put("track", l.track.toJson()).put("rig", l.rig?.toJson()))
         o.put("layers", la)
         o.put("camera", camera.toJson())
         val fa = JSONArray()
@@ -322,12 +354,14 @@ class Project(val dir: File) {
                 p.nextId = o.optInt("nextId", 1000)
                 p.coverId = o.optInt("cover", 0)
                 p.camera = Track.fromJson(o.optJSONArray("camera"))
+                for (l in p.layers) p.loadParts(l)
                 val la = o.getJSONArray("layers")
                 for (i in 0 until la.length()) {
                     val j = la.getJSONObject(i)
                     p.layers.add(Layer(j.getInt("id"), j.optString("name", "Слой")).apply {
                         visible = j.optBoolean("visible", true); opacity = j.optInt("opacity", 255)
                         isObject = j.optBoolean("object", false); track = Track.fromJson(j.optJSONArray("track"))
+                        if (j.has("rig") && !j.isNull("rig")) rig = Rig.fromJson(j.optJSONObject("rig"))
                     })
                 }
                 val fa = o.getJSONArray("frames")

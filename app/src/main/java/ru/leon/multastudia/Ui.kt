@@ -63,7 +63,7 @@ fun Context.sliderRow(title: String, min: Int, max: Int, value: Int, fmt: (Int) 
     return row
 }
 
-enum class Ico { CLOSE, BRUSH, ERASER, LASSO, FILL, TEXT, MORE, UNDO, REDO, COPY, PASTE, ONION, IMAGE, PLAY, PAUSE, PREV, NEXT, PLUS, SHARE, MENU, FIT, LAYERS, EYEDROP, LINE, RECT, OVAL, CHECK, FLIP, FLIP_Y, TRASH, EYE, EYE_OFF, UP, DOWN, GRID, MOVE, CAMERA, KEY }
+enum class Ico { CLOSE, BRUSH, ERASER, LASSO, FILL, TEXT, MORE, UNDO, REDO, COPY, PASTE, ONION, IMAGE, PLAY, PAUSE, PREV, NEXT, PLUS, SHARE, MENU, FIT, LAYERS, EYEDROP, LINE, RECT, OVAL, CHECK, FLIP, FLIP_Y, TRASH, EYE, EYE_OFF, UP, DOWN, GRID, MOVE, CAMERA, KEY, BONE }
 
 /** Иконки рисуются кодом — без картинок и без лишних библиотек. */
 class IconView(ctx: Context, var icon: Ico, var color: Int = C.TEXT) : View(ctx) {
@@ -179,6 +179,11 @@ class IconView(ctx: Context, var icon: Ico, var color: Int = C.TEXT) : View(ctx)
             Ico.CAMERA -> {
                 c.drawRoundRect(RectF(3f, 7f, 16f, 18f), 2f, 2f, p)
                 path.moveTo(16f, 11f); path.lineTo(21f, 8f); path.lineTo(21f, 17f); path.lineTo(16f, 14f); c.drawPath(path, p)
+            }
+            Ico.BONE -> {
+                c.drawLine(7f, 17f, 17f, 7f, p)
+                c.drawCircle(5.5f, 16f, 2f, p); c.drawCircle(8f, 18.5f, 2f, p)
+                c.drawCircle(16f, 5.5f, 2f, p); c.drawCircle(18.5f, 8f, 2f, p)
             }
             Ico.KEY -> {
                 path.moveTo(12f, 4f); path.lineTo(20f, 12f); path.lineTo(12f, 20f); path.lineTo(4f, 12f); path.close(); c.drawPath(path, p)

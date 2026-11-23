@@ -20,7 +20,7 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.sqrt
 
-enum class Tool { BRUSH, ERASER, LASSO, FILL, TEXT, EYEDROP, LINE, RECT, OVAL, MOVE, CAMERA }
+enum class Tool { BRUSH, ERASER, LASSO, FILL, TEXT, EYEDROP, LINE, RECT, OVAL, MOVE, CAMERA, POSE }
 
 class BrushSettings {
     var size = 6f
@@ -42,6 +42,10 @@ interface CanvasHost {
     /** Ключ поставлен/изменён (движение объекта или камеры). */
     fun onKeysChanged(live: Boolean)
     fun defaultEase(): Ease
+    /** Нажали на объект инструментом «Движение». */
+    fun onObjectTapped(layerId: Int)
+    fun onPoseBoneSelected(bone: Int)
+    fun onHint(text: String)
 }
 
 @SuppressLint("ViewConstructor")
@@ -104,7 +108,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     private var selTx = 0f; private var selTy = 0f
 
     // ---------- жесты ----------
-    private enum class Mode { NONE, DRAW, FLOAT_DRAG, MENU_TAP, XF_DRAG, TWO_VIEW, TWO_FLOAT, DONE }
+    private enum class Mode { NONE, DRAW, FLOAT_DRAG, MENU_TAP, XF_DRAG, POSE_DRAG, TWO_VIEW, TWO_FLOAT, DONE }
     private var mode = Mode.NONE
     private val startM = Matrix()
     private var g0x = 0f; private var g0y = 0f; private var gd0 = 1f; private var ga0 = 0f
@@ -222,7 +226,13 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         for (l in p.layers) {
             if (!l.visible && l !== cur) continue
             val base = if (l.visible) l.opacity else 60
-            if (l.isObject) {
+            if (l.isRig) {
+                layerPaint.alpha = base
+                val pose = p.rigPose(l, fi)
+                val solved = RigMath.solve(pose)
+                RigRender.draw(c, l.rig!!, pose, layerPaint, solved)
+                if (l === cur && tool == Tool.POSE) RigRender.drawBones(c, solved, poseBone, 2.5f / s, 7f / s, hp)
+            } else if (l.isObject) {
                 val xf = p.objectXf(l, fi)
                 val m = xf.matrix()
                 c.save(); c.concat(m)
@@ -291,6 +301,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         val sl = sel
         if (sl != null) { drawHandles(c, handlePoints(sl), C.ACCENT, sides = true, menu = true); return }
         if (playBitmap != null) return
+        if (tool == Tool.MOVE && multi) { drawGroupOverlay(c); return }
         if (tool == Tool.MOVE || tool == Tool.CAMERA) xfHandles()?.let { drawHandles(c, it, if (tool == Tool.CAMERA) CAM_COLOR else C.ACCENT, sides = tool == Tool.MOVE, menu = false) }
     }
 
@@ -559,6 +570,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     }
 
     private fun beginXf(sx: Float, sy: Float): Boolean {
+        xfStart = null
         val h = xfHandles() ?: return false
         val xf = currentXf() ?: return false
         val rad = dp(24f).toFloat()
@@ -625,6 +637,267 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         invalidate()
     }
 
+    // ================= несколько объектов сразу =================
+
+    var multi = false
+        set(v) { field = v; if (!v) group.clear(); invalidate() }
+    val group = LinkedHashSet<Int>()
+    private var xfMoved = false
+    private var groupStart = HashMap<Int, Xf>()
+    private var gpx = 0f; private var gpy = 0f
+
+    private fun objWorldQuad(l: Layer, idx: Int): FloatArray {
+        val b = RectF(p.objectBounds(l))
+        val q = floatArrayOf(b.left, b.top, b.right, b.top, b.right, b.bottom, b.left, b.bottom)
+        p.objectXf(l, idx).matrix().mapPoints(q)
+        return q
+    }
+
+    /** Какой объект под пальцем (сверху вниз). */
+    private fun objectAt(sx: Float, sy: Float): Layer? {
+        val w = toWorld(sx, sy)
+        val fi = host.frameIndex()
+        val pad = dp(10f) / viewScale()
+        for (l in p.layers.asReversed()) {
+            if (!l.isObject || !l.visible) continue
+            val im = Matrix(); if (!p.objectXf(l, fi).matrix().invert(im)) continue
+            val a = w.copyOf(); im.mapPoints(a)
+            val b = p.objectBounds(l)
+            if (a[0] >= b.left - pad && a[0] <= b.right + pad && a[1] >= b.top - pad && a[1] <= b.bottom + pad) return l
+        }
+        return null
+    }
+
+    private fun tapObject(sx: Float, sy: Float) {
+        val l = objectAt(sx, sy) ?: return
+        if (multi) { if (!group.remove(l.id)) group.add(l.id) }
+        host.onObjectTapped(l.id)
+        invalidate()
+    }
+
+    private fun groupLayers() = p.layers.filter { it.isObject && it.id in group }
+
+    private fun groupBox(): RectF? {
+        val fi = host.frameIndex()
+        var r: RectF? = null
+        for (l in groupLayers()) {
+            val q = objWorldQuad(l, fi)
+            for (i in 0..3) { if (r == null) r = RectF(q[0], q[1], q[0], q[1]); r.union(q[i * 2], q[i * 2 + 1]) }
+        }
+        return r
+    }
+
+    private fun groupHandles(): FloatArray? {
+        val r = groupBox() ?: return null
+        val q = floatArrayOf(r.left, r.top, r.right, r.top, r.right, r.bottom, r.left, r.bottom)
+        view.mapPoints(q)
+        val pv = floatArrayOf(r.centerX(), r.centerY()); view.mapPoints(pv)
+        return handlePointsFor(q, pv[0], pv[1])
+    }
+
+    private fun drawGroupOverlay(c: Canvas) {
+        val fi = host.frameIndex()
+        hp.style = Paint.Style.STROKE; hp.strokeWidth = dp(1.5f).toFloat(); hp.color = C.PURPLE
+        for (l in groupLayers()) {
+            val q = objWorldQuad(l, fi); view.mapPoints(q)
+            val path = Path().apply { moveTo(q[0], q[1]); lineTo(q[2], q[3]); lineTo(q[4], q[5]); lineTo(q[6], q[7]); close() }
+            c.drawPath(path, hp)
+        }
+        groupHandles()?.let { drawHandles(c, it, C.ACCENT, sides = false, menu = false) }
+    }
+
+    private fun beginGroup(sx: Float, sy: Float) {
+        xfStart = null
+        val h = groupHandles() ?: run { xfHandle = H_NONE; return }
+        val rad = dp(24f).toFloat()
+        fun near(i: Int) = hypot(sx - h[i], sy - h[i + 1]) < rad
+        xfHandle = H_MOVE
+        if (near(16)) xfHandle = H_ROTATE
+        else for (i in 0..3) if (near(i * 2)) { xfHandle = H_CORNER + i; break }
+        val fi = host.frameIndex()
+        groupStart.clear()
+        for (l in groupLayers()) groupStart[l.id] = p.objectXf(l, fi).copy()
+        gpx = h[20]; gpy = h[21]
+        val pw = toWorld(gpx, gpy); gpx = pw[0]; gpy = pw[1]
+        val w = toWorld(sx, sy); xfTx = w[0]; xfTy = w[1]
+    }
+
+    private fun moveGroup(wx: Float, wy: Float) {
+        if (groupStart.isEmpty() || xfHandle == H_NONE) return
+        var dx = 0f; var dy = 0f; var ang = 0f; var k = 1f
+        when {
+            xfHandle == H_MOVE -> { dx = wx - xfTx; dy = wy - xfTy }
+            xfHandle == H_ROTATE -> {
+                ang = (Math.toDegrees(atan2((wy - gpy).toDouble(), (wx - gpx).toDouble())) -
+                       Math.toDegrees(atan2((xfTy - gpy).toDouble(), (xfTx - gpx).toDouble()))).toFloat()
+            }
+            else -> k = (hypot(wx - gpx, wy - gpy) / maxOf(1f, hypot(xfTx - gpx, xfTy - gpy))).coerceAtLeast(0.02f)
+        }
+        val cs = Math.cos(Math.toRadians(ang.toDouble())).toFloat(); val sn = Math.sin(Math.toRadians(ang.toDouble())).toFloat()
+        val fid = host.currentFrame().id
+        for (l in groupLayers()) {
+            val st = groupStart[l.id] ?: continue
+            val n = st.copy()
+            val rx = st.x - gpx; val ry = st.y - gpy
+            n.x = gpx + (rx * cs - ry * sn) * k + dx
+            n.y = gpy + (rx * sn + ry * cs) * k + dy
+            n.rot = st.rot + ang
+            n.sx = st.sx * k; n.sy = st.sy * k
+            l.track.set(fid, n, l.track.keyAt(fid)?.ease ?: host.defaultEase())
+        }
+        host.onKeysChanged(true)
+        invalidate()
+    }
+
+    // ================= поза персонажа (риг) =================
+
+    var poseBone = 1
+        set(v) { field = v; invalidate() }
+    /** 0 — крутить, 1 — тянуть, 2 — оторвать сустав. */
+    var poseMode = 0
+    private var poseStart: Pose? = null
+    private var poseDrag = -1         // кость; -2 — весь персонаж
+    private var poseA0 = 0f
+    private var poseD0 = 1f
+
+    private fun rigLayer(): Layer? = host.currentLayer().takeIf { it.isRig }
+
+    fun currentPose(): Pose? { val l = rigLayer() ?: return null; return p.rigPose(l, host.frameIndex()) }
+
+    private fun solvedScreen(pose: Pose): Pair<FloatArray, FloatArray> {
+        val s = RigMath.solve(pose)
+        val hd = FloatArray(Skel.N * 2); val tl = FloatArray(Skel.N * 2)
+        for (b in 0 until Skel.N) { hd[b * 2] = s.head[b].x; hd[b * 2 + 1] = s.head[b].y; tl[b * 2] = s.tail[b].x; tl[b * 2 + 1] = s.tail[b].y }
+        view.mapPoints(hd); view.mapPoints(tl)
+        return hd to tl
+    }
+
+    private fun beginPose(sx: Float, sy: Float): Boolean {
+        val pose = currentPose() ?: return false
+        val (hd, tl) = solvedScreen(pose)
+        val rad = dp(26f).toFloat()
+        var best = -3; var bd = rad
+        val dRoot = hypot(sx - hd[0], sy - hd[1])
+        if (dRoot < bd) { best = -2; bd = dRoot }
+        for (b in 0 until Skel.N) {
+            val d = hypot(sx - tl[b * 2], sy - tl[b * 2 + 1])
+            if (d < bd) { best = b; bd = d }
+        }
+        if (best == -3) {
+            // нажали на саму кость — просто выбираем её
+            var nb = -1; var nd = dp(18f).toFloat()
+            for (b in 0 until Skel.N) {
+                val d = distToSeg(sx, sy, hd[b * 2], hd[b * 2 + 1], tl[b * 2], tl[b * 2 + 1])
+                if (d < nd) { nb = b; nd = d }
+            }
+            if (nb >= 0) { poseBone = nb; host.onPoseBoneSelected(nb) }
+            return false
+        }
+        poseStart = pose.copy()
+        poseDrag = best
+        if (best >= 0) {
+            poseBone = best; host.onPoseBoneSelected(best)
+            poseA0 = PoseEdit.screenAngle(hd[best * 2], hd[best * 2 + 1], sx, sy)
+            poseD0 = maxOf(1f, hypot(sx - hd[best * 2], sy - hd[best * 2 + 1]))
+        }
+        val w = toWorld(sx, sy); xfTx = w[0]; xfTy = w[1]
+        return true
+    }
+
+    private fun distToSeg(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
+        val vx = bx - ax; val vy = by - ay
+        val l2 = vx * vx + vy * vy
+        val t = if (l2 < 1e-3f) 0f else (((px - ax) * vx + (py - ay) * vy) / l2).coerceIn(0f, 1f)
+        return hypot(px - (ax + vx * t), py - (ay + vy * t))
+    }
+
+    private fun movePose(sx: Float, sy: Float) {
+        val st = poseStart ?: return
+        val l = rigLayer() ?: return
+        val n = st.copy()
+        val w = toWorld(sx, sy)
+        val dx = w[0] - xfTx; val dy = w[1] - xfTy
+        val b = poseDrag
+        if (b == -2) { n.x = st.x + dx; n.y = st.y + dy }
+        else if (b >= 0) {
+            if (poseMode == 2) {
+                n.off[b] = st.off[b] + V3(dx / st.scale, dy / st.scale, 0f)
+            } else {
+                val (hd, _) = solvedScreen(st)
+                val a1 = PoseEdit.screenAngle(hd[b * 2], hd[b * 2 + 1], sx, sy)
+                PoseEdit.rotateWorld(n, b, Q.axis(0f, 0f, 1f, a1 - poseA0), st)
+                if (poseMode == 1) {
+                    val d1 = hypot(sx - hd[b * 2], sy - hd[b * 2 + 1])
+                    n.stretch[b] = (st.stretch[b] * d1 / poseD0).coerceIn(0.1f, 6f)
+                }
+            }
+        }
+        setPose(l, n)
+    }
+
+    private fun setPose(l: Layer, n: Pose) {
+        val r = l.rig ?: return
+        val fid = host.currentFrame().id
+        r.track.set(fid, n, r.track.keyAt(fid)?.ease ?: host.defaultEase())
+        host.onKeysChanged(true)
+        invalidate()
+    }
+
+    /** Наклонить выбранную кость к себе (+) или от себя (−). */
+    fun tiltBone(deg: Float) {
+        val l = rigLayer() ?: return
+        val st = currentPose()?.copy() ?: return
+        val s = RigMath.solveLocal(st)
+        val b = poseBone
+        val dx = s.tail[b].x - s.head[b].x; val dy = s.tail[b].y - s.head[b].y
+        val n = st.copy()
+        PoseEdit.rotateWorld(n, b, Q.axis(-dy, dx, 0f, deg), st)
+        setPose(l, n); host.onKeysChanged(false)
+    }
+
+    /** Повернуть выбранную кость вокруг себя (скрутка). */
+    fun twistBone(deg: Float) {
+        val l = rigLayer() ?: return
+        val st = currentPose()?.copy() ?: return
+        val s = RigMath.solveLocal(st)
+        val b = poseBone
+        val v = s.tail[b] - s.head[b]
+        val n = st.copy()
+        PoseEdit.rotateWorld(n, b, Q.axis(v.x, v.y, v.z, deg), st)
+        setPose(l, n); host.onKeysChanged(false)
+    }
+
+    fun setRigGlobal(yaw: Float? = null, pitch: Float? = null, scale: Float? = null) {
+        val l = rigLayer() ?: return
+        val n = currentPose()?.copy() ?: return
+        yaw?.let { n.yaw = it }; pitch?.let { n.pitch = it }; scale?.let { n.scale = it }
+        setPose(l, n)
+    }
+
+    fun resetBone() {
+        val l = rigLayer() ?: return
+        val n = currentPose()?.copy() ?: return
+        val b = poseBone
+        n.rot[b] = Q(); n.stretch[b] = 1f; n.off[b] = V3()
+        setPose(l, n); host.onKeysChanged(false)
+    }
+
+    /** Вырезать выделение в отдельную картинку (для кусочка персонажа). */
+    fun floatToBitmap(remove: Boolean = true): Bitmap? {
+        val sl = sel ?: return null
+        val b = sl.bounds()
+        val w = maxOf(1, b.width()); val h = maxOf(1, b.height())
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val m = Matrix(sl.matrix); m.postTranslate(-b.left.toFloat(), -b.top.toFloat())
+        Canvas(out).drawBitmap(sl.bmp, m, bmpPaint)
+        if (!remove) return out
+        sel = null
+        sl.cut?.let { commitEdit(it) }
+        host.onFloatChanged(false)
+        invalidate()
+        return out
+    }
+
     // ================= текст, пипетка =================
 
     fun drawText(text: String, x: Float, y: Float) {
@@ -684,10 +957,21 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
                 downX = e.x; downY = e.y
                 val w = toLayer(e.x, e.y)
                 mode = Mode.DRAW
-                if (sel == null && (tool == Tool.MOVE || tool == Tool.CAMERA)) {
-                    if (!beginXf(e.x, e.y)) mode = Mode.DONE else mode = Mode.XF_DRAG
+                xfMoved = false
+                if (sel == null && tool == Tool.POSE) {
+                    mode = if (beginPose(e.x, e.y)) Mode.POSE_DRAG else Mode.DONE
                     return true
                 }
+                if (sel == null && tool == Tool.MOVE && multi) {
+                    mode = Mode.XF_DRAG
+                    beginGroup(e.x, e.y)
+                    return true
+                }
+                if (sel == null && (tool == Tool.MOVE || tool == Tool.CAMERA)) {
+                    mode = if (beginXf(e.x, e.y)) Mode.XF_DRAG else Mode.XF_DRAG
+                    return true
+                }
+                if (sel == null && host.currentLayer().isRig) { host.onHint("Это слой-персонаж: включи «Позу» в «⋯», а рисуй на обычном слое"); mode = Mode.DONE; return true }
                 val sl = sel
                 if (sl != null) {
                     val hnd = hitHandle(e.x, e.y)
@@ -705,7 +989,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (e.pointerCount == 2) {
                     val wasFloat = mode == Mode.FLOAT_DRAG && sel != null
-                    if (mode == Mode.XF_DRAG) host.onKeysChanged(false)
+                    if ((mode == Mode.XF_DRAG || mode == Mode.POSE_DRAG) && xfMoved) host.onKeysChanged(false)
                     cancelTool()
                     mode = if (wasFloat) Mode.TWO_FLOAT else Mode.TWO_VIEW
                     startTwo(e)
@@ -735,18 +1019,29 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
                         }
                     }
                     Mode.TWO_VIEW, Mode.TWO_FLOAT -> if (e.pointerCount >= 2) moveTwo(e)
-                    Mode.XF_DRAG -> { val w = toWorld(e.x, e.y); moveXf(w[0], w[1]) }
+                    Mode.XF_DRAG -> {
+                        if (!xfMoved && hypot(e.x - downX, e.y - downY) > dp(7f)) xfMoved = true
+                        if (xfMoved) {
+                            val w = toWorld(e.x, e.y)
+                            if (tool == Tool.MOVE && multi) moveGroup(w[0], w[1]) else if (xfStart != null) moveXf(w[0], w[1])
+                        }
+                    }
+                    Mode.POSE_DRAG -> {
+                        if (!xfMoved && hypot(e.x - downX, e.y - downY) > dp(5f)) xfMoved = true
+                        if (xfMoved) movePose(e.x, e.y)
+                    }
                     else -> {}
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 if (mode == Mode.TWO_VIEW) snapRotation()
-                if (mode == Mode.XF_DRAG) host.onKeysChanged(false)
+                if ((mode == Mode.XF_DRAG || mode == Mode.POSE_DRAG) && xfMoved) host.onKeysChanged(false)
                 mode = Mode.DONE
             }
             MotionEvent.ACTION_UP -> {
                 if (mode == Mode.MENU_TAP) host.onFloatMenu()
-                if (mode == Mode.XF_DRAG) host.onKeysChanged(false)
+                if ((mode == Mode.XF_DRAG || mode == Mode.POSE_DRAG) && xfMoved) host.onKeysChanged(false)
+                if (mode == Mode.XF_DRAG && !xfMoved && tool == Tool.MOVE) tapObject(e.x, e.y)
                 if (mode == Mode.DRAW) {
                     val w = toLayer(e.x, e.y); endTool(w[0], w[1])
                 }
@@ -890,7 +1185,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
             }
             Tool.TEXT -> host.requestText(x, y)
             Tool.EYEDROP -> host.onColorPicked(sample(x, y), true)
-            Tool.MOVE, Tool.CAMERA -> {}
+            Tool.MOVE, Tool.CAMERA, Tool.POSE -> {}
         }
         invalidate()
     }
