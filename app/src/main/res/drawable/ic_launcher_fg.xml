@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- плёнка -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M30,34h48a4,4 0,0 1,4 4v32a4,4 0,0 1,-4 4h-48a4,4 0,0 1,-4 -4v-32a4,4 0,0 1,4 -4z"/>
+    <path android:fillColor="#FF4F7B"
+        android:pathData="M31,37h4v4h-4zM31,46h4v4h-4zM31,55h4v4h-4zM31,64h4v4h-4zM73,37h4v4h-4zM73,46h4v4h-4zM73,55h4v4h-4zM73,64h4v4h-4z"/>
+    <!-- карандаш -->
+    <path android:fillColor="#2B2B2B"
+        android:pathData="M44,64l3,-9l15,-15l6,6l-15,15z"/>
+    <path android:fillColor="#FF4F7B"
+        android:pathData="M60,42l3,-3l6,6l-3,3z"/>
+</vector>
