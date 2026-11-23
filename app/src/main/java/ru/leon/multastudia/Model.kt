@@ -4,7 +4,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -14,6 +16,12 @@ import java.util.concurrent.Executors
 class Layer(val id: Int, var name: String) {
     var visible = true
     var opacity = 255
+    /** Слой-объект: один рисунок на все кадры + ключевые кадры движения. */
+    var isObject = false
+    var track = Track()
+    /** Где на рисунке объекта что-то нарисовано (кэш). */
+    var bounds: Rect? = null
+    var boundsDirty = true
 }
 
 class Frame(val id: Int) {
@@ -44,6 +52,9 @@ class Project(val dir: File) {
     val marginY get() = canvasH / 4
     val worldW get() = canvasW + marginX * 2
     val worldH get() = canvasH + marginY * 2
+
+    /** Камера: какой кусок мира попадает в фильм. */
+    var camera = Track()
 
     private val cells = HashMap<String, Bitmap>()
     private val dirty = HashSet<String>()
@@ -104,8 +115,47 @@ class Project(val dir: File) {
 
     fun markDirty(layerId: Int, frameId: Int) {
         dirty.add(key(layerId, frameId))
-        frames.firstOrNull { it.id == frameId }?.previewDirty = true
+        if (frameId == 0) {
+            invalidateAllPreviews()
+            layers.firstOrNull { it.id == layerId }?.boundsDirty = true
+        } else frames.firstOrNull { it.id == frameId }?.previewDirty = true
     }
+
+    fun invalidateAllPreviews() { for (f in frames) f.previewDirty = true }
+
+    // ---------- объекты и камера ----------
+
+    fun objectBounds(l: Layer): Rect {
+        val cached = l.bounds
+        if (cached != null && !l.boundsDirty) return cached
+        val bmp = cells[key(l.id, 0)] ?: peekCell(l.id, 0)
+        var r: Rect? = null
+        if (bmp != null) {
+            val w = bmp.width; val h = bmp.height
+            val px = IntArray(w * h); bmp.getPixels(px, 0, w, 0, 0, w, h)
+            var x0 = w; var y0 = h; var x1 = -1; var y1 = -1
+            for (y in 0 until h) {
+                val row = y * w
+                for (x in 0 until w) if ((px[row + x] ushr 24) > 8) {
+                    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y
+                }
+            }
+            if (x1 >= 0) r = Rect(x0, y0, x1 + 1, y1 + 1)
+        }
+        val res = r ?: Rect(marginX + canvasW / 2 - 40, marginY + canvasH / 2 - 40, marginX + canvasW / 2 + 40, marginY + canvasH / 2 + 40)
+        l.bounds = res; l.boundsDirty = false
+        return res
+    }
+
+    fun objectDefault(l: Layer): Xf {
+        val b = objectBounds(l)
+        return Xf(b.exactCenterX(), b.exactCenterY())
+    }
+
+    fun cameraDefault() = Xf((marginX + canvasW / 2f), (marginY + canvasH / 2f))
+
+    fun objectXf(l: Layer, idx: Int): Xf = l.track.eval(frames, idx, objectDefault(l))
+    fun cameraXf(idx: Int): Xf = camera.eval(frames, idx, cameraDefault())
 
     fun hasCellData(layerId: Int, frameId: Int): Boolean =
         cells.containsKey(key(layerId, frameId)) || cellFile(layerId, frameId).exists()
@@ -162,12 +212,14 @@ class Project(val dir: File) {
             io.submit { cellFile(layerId, fr.id).delete() }
             fr.previewDirty = true
         }
+        cells.remove(key(layerId, 0)); dirty.remove(key(layerId, 0))
+        io.submit { cellFile(layerId, 0).delete() }
     }
 
     // ---------- сборка кадра ----------
 
     /** Собирает кадр (только область холста) в картинку нужного масштаба. */
-    fun compose(frame: Frame, scale: Float, config: Bitmap.Config = Bitmap.Config.ARGB_8888): Bitmap {
+    fun compose(frame: Frame, scale: Float, config: Bitmap.Config = Bitmap.Config.ARGB_8888, withCamera: Boolean = true): Bitmap {
         val w = maxOf(1, (canvasW * scale).toInt())
         val h = maxOf(1, (canvasH * scale).toInt())
         val out = Bitmap.createBitmap(w, h, config)
@@ -175,12 +227,25 @@ class Project(val dir: File) {
         c.drawColor(bgColor)
         c.scale(w.toFloat() / canvasW, h.toFloat() / canvasH)
         c.translate(-marginX.toFloat(), -marginY.toFloat())
-        val p = Paint(Paint.FILTER_BITMAP_FLAG)
+        val idx = frames.indexOf(frame)
+        if (withCamera && !camera.isEmpty) {
+            val inv = Matrix()
+            if (cameraXf(idx).matrix().invert(inv)) c.concat(inv)
+        }
+        val p = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        val m = Matrix()
         for (l in layers) {
             if (!l.visible) continue
-            val bmp = peekCell(l.id, frame.id) ?: continue
-            p.alpha = l.opacity
-            c.drawBitmap(bmp, 0f, 0f, p)
+            if (l.isObject) {
+                val bmp = peekCell(l.id, 0) ?: continue
+                val xf = objectXf(l, idx)
+                p.alpha = (l.opacity * xf.alpha).toInt().coerceIn(0, 255)
+                c.drawBitmap(bmp, xf.matrix(m), p)
+            } else {
+                val bmp = peekCell(l.id, frame.id) ?: continue
+                p.alpha = l.opacity
+                c.drawBitmap(bmp, 0f, 0f, p)
+            }
         }
         return out
     }
@@ -198,7 +263,7 @@ class Project(val dir: File) {
                 if (b != null) { frame.preview = b; return b }
             }
         }
-        val b = compose(frame, previewScale(), Bitmap.Config.RGB_565)
+        val b = compose(frame, previewScale(), Bitmap.Config.RGB_565, withCamera = false)
         frame.preview = b
         frame.previewDirty = false
         val copy = b.copy(Bitmap.Config.RGB_565, false)
@@ -216,8 +281,10 @@ class Project(val dir: File) {
         o.put("name", name); o.put("w", canvasW); o.put("h", canvasH); o.put("fps", fps)
         o.put("bg", bgColor); o.put("nextId", nextId); o.put("cover", coverId)
         val la = JSONArray()
-        for (l in layers) la.put(JSONObject().put("id", l.id).put("name", l.name).put("visible", l.visible).put("opacity", l.opacity))
+        for (l in layers) la.put(JSONObject().put("id", l.id).put("name", l.name).put("visible", l.visible).put("opacity", l.opacity)
+            .put("object", l.isObject).put("track", l.track.toJson()))
         o.put("layers", la)
+        o.put("camera", camera.toJson())
         val fa = JSONArray()
         for (f in frames) fa.put(JSONObject().put("id", f.id).put("hold", f.hold))
         o.put("frames", fa)
@@ -254,11 +321,13 @@ class Project(val dir: File) {
                 p.fps = o.optInt("fps", 12); p.bgColor = o.optInt("bg", Color.WHITE)
                 p.nextId = o.optInt("nextId", 1000)
                 p.coverId = o.optInt("cover", 0)
+                p.camera = Track.fromJson(o.optJSONArray("camera"))
                 val la = o.getJSONArray("layers")
                 for (i in 0 until la.length()) {
                     val j = la.getJSONObject(i)
                     p.layers.add(Layer(j.getInt("id"), j.optString("name", "Слой")).apply {
                         visible = j.optBoolean("visible", true); opacity = j.optInt("opacity", 255)
+                        isObject = j.optBoolean("object", false); track = Track.fromJson(j.optJSONArray("track"))
                     })
                 }
                 val fa = o.getJSONArray("frames")

@@ -57,6 +57,15 @@ class EditorActivity : Activity(), CanvasHost {
     private lateinit var pasteBtn: IconButton
 
     private var lastDrawTool = Tool.BRUSH
+    private lateinit var keyPanel: LinearLayout
+    private lateinit var keyBtn: TextView
+    private lateinit var easeBtn: LinearLayout
+    private lateinit var easeCurve: CurveView
+    private lateinit var easeText: TextView
+    private lateinit var keyHint: TextView
+    private var lastEase = Ease.IN_OUT
+    private val thumbKeyBadges = ArrayList<View>()
+    private var playCache: HashMap<Int, Bitmap>? = null
     private var clipboard: Map<Int, Bitmap>? = null
     private var playing = false
     private var playPos = 0
@@ -143,6 +152,36 @@ class EditorActivity : Activity(), CanvasHost {
         toolsCol.addView(morePanel, lp(MATCH, WRAP).apply { topMargin = dp(8f) })
         settingsPanel.visibility = View.GONE; morePanel.visibility = View.GONE
         area.addView(toolsCol, FrameLayout.LayoutParams(MATCH, WRAP).apply { setMargins(dp(10f), dp(10f), dp(10f), 0) })
+
+        // ---- панель ключевых кадров ----
+        keyPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(C.BAR, dp(18f).toFloat()); setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+            visibility = View.GONE; isClickable = true
+        }
+        keyHint = label("", 12f, C.DIM).apply { gravity = Gravity.CENTER }
+        keyPanel.addView(keyHint, lp(MATCH, WRAP))
+        val keyRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        keyBtn = label("◆ Ключ", 14f).apply {
+            gravity = Gravity.CENTER; setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+            setOnClickListener { toggleKey() }
+        }
+        keyRow.addView(keyBtn, lp(WRAP, WRAP))
+        easeBtn = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = rounded(C.CARD2, dp(12f).toFloat()); setPadding(dp(4f), 0, dp(10f), 0)
+            setOnClickListener { pickEase() }
+        }
+        easeCurve = CurveView(this, lastEase)
+        easeBtn.addView(easeCurve, lp(dp(44f), dp(38f)))
+        easeText = label("", 13f).apply { maxLines = 1 }
+        easeBtn.addView(easeText, lp(0, WRAP, 1f))
+        keyRow.addView(easeBtn, lp(0, WRAP, 1f).apply { leftMargin = dp(6f); rightMargin = dp(6f) })
+        keyRow.addView(label("Сброс", 13f, C.DIM).apply {
+            setPadding(dp(8f), dp(8f), dp(8f), dp(8f)); setOnClickListener { resetKeys() }
+        })
+        keyPanel.addView(keyRow, lp(MATCH, WRAP).apply { topMargin = dp(4f) })
+        area.addView(keyPanel, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM).apply { setMargins(dp(10f), 0, dp(10f), dp(10f)) })
 
         root.addView(area, lp(MATCH, 0, 1f))
 
@@ -244,9 +283,12 @@ class EditorActivity : Activity(), CanvasHost {
         cv.tool = t
         if (t != Tool.EYEDROP) lastDrawTool = t
         for ((k, b) in toolButtons) b.active = k == t
-        moreBtn.active = t in listOf(Tool.LINE, Tool.RECT, Tool.OVAL, Tool.EYEDROP)
+        moreBtn.active = t in listOf(Tool.LINE, Tool.RECT, Tool.OVAL, Tool.EYEDROP, Tool.MOVE, Tool.CAMERA)
         hidePanels()
         refreshSelBar()
+        refreshKeyPanel()
+        updateKeyBadges()
+        cv.invalidate()
     }
 
     private fun hidePanels() { settingsPanel.visibility = View.GONE; morePanel.visibility = View.GONE }
@@ -259,12 +301,19 @@ class EditorActivity : Activity(), CanvasHost {
         fun add(ico: Ico, text: String, act: () -> Unit) {
             row.addView(IconButton(this, ico, text, 24f).apply { setOnClickListener { act() } }, lp(0, WRAP, 1f))
         }
+        add(Ico.MOVE, "Движение") { selectTool(Tool.MOVE) }
+        add(Ico.CAMERA, "Камера") { selectTool(Tool.CAMERA) }
         add(Ico.EYEDROP, "Пипетка") { selectTool(Tool.EYEDROP) }
-        add(Ico.LINE, "Линия") { selectTool(Tool.LINE); showSettings() }
-        add(Ico.RECT, "Прямоуг.") { selectTool(Tool.RECT); showSettings() }
-        add(Ico.OVAL, "Овал") { selectTool(Tool.OVAL); showSettings() }
-        add(Ico.GRID, if (cv.grid) "Сетка ✓" else "Сетка") { cv.grid = !cv.grid; cv.invalidate(); hidePanels() }
         morePanel.addView(row)
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        fun add2(ico: Ico, text: String, act: () -> Unit) {
+            row2.addView(IconButton(this, ico, text, 24f).apply { setOnClickListener { act() } }, lp(0, WRAP, 1f))
+        }
+        add2(Ico.LINE, "Линия") { selectTool(Tool.LINE); showSettings() }
+        add2(Ico.RECT, "Прямоуг.") { selectTool(Tool.RECT); showSettings() }
+        add2(Ico.OVAL, "Овал") { selectTool(Tool.OVAL); showSettings() }
+        add2(Ico.GRID, if (cv.grid) "Сетка ✓" else "Сетка") { cv.grid = !cv.grid; cv.invalidate(); hidePanels() }
+        morePanel.addView(row2)
         morePanel.visibility = View.VISIBLE
     }
 
@@ -319,6 +368,7 @@ class EditorActivity : Activity(), CanvasHost {
 
     override fun onEdited() {
         refreshButtons()
+        if (currentLayer().isObject) refreshThumbsLazy()
         ui.removeCallbacks(thumbUpdate)
         ui.postDelayed(thumbUpdate, 350)
     }
@@ -336,13 +386,131 @@ class EditorActivity : Activity(), CanvasHost {
     }
 
     override fun onFloatMenu() {
-        val items = arrayOf("Трансформация", "Перспектива")
+        val items = arrayOf(
+            (if (!cv.perspectiveMode) "● " else "○ ") + "Трансформация",
+            (if (cv.perspectiveMode) "● " else "○ ") + "Перспектива",
+            "◆ Превратить в объект (автоанимация)"
+        )
         AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Выделение")
-            .setSingleChoiceItems(items, if (cv.perspectiveMode) 1 else 0) { d, w -> cv.perspectiveMode = w == 1; d.dismiss() }
-            .show()
+            .setItems(items) { _, w ->
+                when (w) {
+                    0 -> cv.perspectiveMode = false
+                    1 -> cv.perspectiveMode = true
+                    2 -> makeObjectFromSelection()
+                }
+            }.show()
     }
 
     private fun toastShort(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    // ===================================================================
+    // Автоанимация: объекты, ключи, камера
+    // ===================================================================
+
+    override fun defaultEase(): Ease = lastEase
+
+    override fun onKeysChanged(live: Boolean) {
+        if (live) { refreshKeyPanel(); return }
+        p.invalidateAllPreviews()
+        p.saveMeta()
+        refreshKeyPanel()
+        updateKeyBadges()
+        refreshThumbsLazy()
+    }
+
+    /** Чья дорожка ключей сейчас на экране. */
+    private fun activeTrack(): Track? = when {
+        cv.tool == Tool.CAMERA -> p.camera
+        cv.tool == Tool.MOVE && currentLayer().isObject -> currentLayer().track
+        else -> null
+    }
+
+    private fun refreshKeyPanel() {
+        val show = cv.tool == Tool.MOVE || cv.tool == Tool.CAMERA
+        keyPanel.visibility = if (show) View.VISIBLE else View.GONE
+        if (!show) return
+        val tr = activeTrack()
+        if (tr == null) {
+            keyHint.text = "Движение работает со слоем-объектом. Выдели рисунок лассо → «⋯» → «Превратить в объект», или создай слой-объект в «Слоях»."
+            keyBtn.visibility = View.GONE; easeBtn.visibility = View.GONE
+            return
+        }
+        keyBtn.visibility = View.VISIBLE; easeBtn.visibility = View.VISIBLE
+        val k = tr.keyAt(currentFrame().id)
+        val who = if (cv.tool == Tool.CAMERA) "камеру" else "объект"
+        keyHint.text = if (tr.isEmpty) "Двигай, крути и масштабируй $who — ключ поставится сам. Потом перейди на другой кадр и подвинь ещё раз."
+                       else "Ключей: ${tr.keys.size}. Плавность действует от этого ключа до следующего."
+        keyBtn.text = if (k != null) "◆ Ключ" else "◇ Ключ"
+        keyBtn.background = rounded(if (k != null) C.ACCENT else C.CARD2, dp(12f).toFloat())
+        val e = k?.ease ?: lastEase
+        easeCurve.ease = e; easeCurve.invalidate()
+        easeText.text = e.title
+    }
+
+    private fun toggleKey() {
+        val tr = activeTrack() ?: return
+        val fid = currentFrame().id
+        if (tr.keyAt(fid) != null) tr.remove(fid)
+        else {
+            val xf = if (cv.tool == Tool.CAMERA) p.cameraXf(frameIdx) else p.objectXf(currentLayer(), frameIdx)
+            tr.set(fid, xf.copy(), lastEase)
+        }
+        cv.invalidate()
+        onKeysChanged(false)
+    }
+
+    private fun pickEase() {
+        val tr = activeTrack()
+        val k = tr?.keyAt(currentFrame().id)
+        EasePicker.show(this, k?.ease ?: lastEase) { e ->
+            lastEase = e
+            if (k != null) { k.ease = e; onKeysChanged(false) } else refreshKeyPanel()
+            cv.invalidate()
+        }
+    }
+
+    private fun resetKeys() {
+        val tr = activeTrack() ?: return
+        AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Удалить все ключи?")
+            .setMessage(if (cv.tool == Tool.CAMERA) "Камера вернётся на весь холст." else "Объект вернётся на место.")
+            .setPositiveButton("Удалить") { _, _ -> tr.keys.clear(); cv.invalidate(); onKeysChanged(false) }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    private fun makeObjectFromSelection() {
+        val world = cv.floatToObject() ?: return
+        val l = Layer(p.newId(), "Объект ${p.layers.count { it.isObject } + 1}").apply { isObject = true }
+        p.layers.add(layerIdx + 1, l)
+        p.setCell(l.id, 0, world)
+        layerIdx += 1
+        p.saveMeta()
+        cv.dropShadow()
+        refreshLayerBtn()
+        selectTool(Tool.MOVE)
+        toastShort("Готово! Теперь двигай объект и ставь ключи на разных кадрах")
+    }
+
+    private fun updateKeyBadges() {
+        val tr = activeTrack()
+        p.frames.forEachIndexed { i, f ->
+            thumbKeyBadges.getOrNull(i)?.visibility = if (tr?.keyAt(f.id) != null) View.VISIBLE else View.GONE
+        }
+    }
+
+    private val lazyThumbs = object : Runnable {
+        override fun run() {
+            if (playing) return
+            val i = p.frames.indexOfFirst { it.previewDirty }
+            if (i < 0) return
+            updateThumb(i)
+            ui.postDelayed(this, 20)
+        }
+    }
+
+    private fun refreshThumbsLazy() {
+        ui.removeCallbacks(lazyThumbs)
+        ui.postDelayed(lazyThumbs, 60)
+    }
 
     override fun onColorPicked(color: Int, done: Boolean) {
         cv.brush.color = color
@@ -387,17 +555,20 @@ class EditorActivity : Activity(), CanvasHost {
         if (old.previewDirty) { p.preview(old); updateThumb(frameIdx) }
         frameIdx = ni
         val f = currentFrame()
-        p.evictExcept(setOf(f.id))
+        p.evictExcept(setOf(f.id, 0))
         for (l in p.layers) p.cell(l.id, f.id, false)
         cv.dropShadow()
         cv.invalidate()
         refreshStripSelection()
+        refreshKeyPanel()
     }
 
     private fun rebuildStrip() {
         frameStrip.removeAllViews()
+        thumbKeyBadges.clear()
         p.frames.forEachIndexed { i, f -> frameStrip.addView(makeThumb(i, f)) }
         refreshStripSelection()
+        updateKeyBadges()
     }
 
     private fun makeThumb(i: Int, f: Frame): View {
@@ -418,6 +589,9 @@ class EditorActivity : Activity(), CanvasHost {
             }
             box.addView(h, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.START).apply { setMargins(dp(4f), 0, 0, dp(4f)) })
         }
+        val kb = label("◆", 13f, C.ACCENT).apply { visibility = View.GONE }
+        box.addView(kb, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(5f), dp(2f)) })
+        thumbKeyBadges.add(kb)
         val ratio = p.canvasW.toFloat() / p.canvasH
         val h = dp(58f)
         val w = (h * ratio).toInt().coerceIn(dp(44f), dp(110f))
@@ -462,6 +636,7 @@ class EditorActivity : Activity(), CanvasHost {
             }
         }
         p.frames.add(frameIdx + 1, nf)
+        if (!p.camera.isEmpty || p.layers.any { it.isObject }) p.invalidateAllPreviews()
         p.saveMeta()
         rebuildStrip()
         goToFrame(frameIdx + 1)
@@ -498,6 +673,9 @@ class EditorActivity : Activity(), CanvasHost {
         }
         p.deleteCellFiles(f.id)
         cv.undo.forget(frameId = f.id)
+        for (l in p.layers) l.track.remove(f.id)
+        p.camera.remove(f.id)
+        p.invalidateAllPreviews()
         p.frames.removeAt(frameIdx)
         if (frameIdx >= p.frames.size) frameIdx = p.frames.size - 1
         p.saveMeta()
@@ -513,6 +691,7 @@ class EditorActivity : Activity(), CanvasHost {
         if (ni !in p.frames.indices) return
         val f = p.frames.removeAt(frameIdx)
         p.frames.add(ni, f)
+        if (!p.camera.isEmpty || p.layers.any { it.isObject }) p.invalidateAllPreviews()
         frameIdx = ni
         p.saveMeta()
         rebuildStrip()
@@ -562,7 +741,8 @@ class EditorActivity : Activity(), CanvasHost {
     private var playSequence = IntArray(0)
 
     private fun showPlayFrame(fi: Int) {
-        cv.playBitmap = p.preview(p.frames[fi])
+        val f = p.frames[fi]
+        cv.playBitmap = playCache?.get(f.id) ?: p.preview(f)
         counter.text = "${fi + 1}/${p.frames.size}"
     }
 
@@ -573,8 +753,11 @@ class EditorActivity : Activity(), CanvasHost {
         updateThumb(frameIdx)
         val seq = ArrayList<Int>()
         p.frames.forEachIndexed { i, f -> repeat(f.hold) { seq.add(i) } }
-        // заранее готовим превьюшки
+        // заранее готовим превьюшки (с камерой, если она двигается)
         for (f in p.frames) p.preview(f)
+        playCache = if (p.camera.isEmpty) null else HashMap<Int, Bitmap>().also { m ->
+            for (f in p.frames) m[f.id] = p.compose(f, p.previewScale(), Bitmap.Config.RGB_565, withCamera = true)
+        }
         playSequence = seq.toIntArray()
         playing = true
         playBtn.setIcon(Ico.PAUSE)
@@ -589,6 +772,7 @@ class EditorActivity : Activity(), CanvasHost {
         ui.removeCallbacks(playTick)
         playBtn.setIcon(Ico.PLAY)
         cv.playBitmap = null
+        playCache = null
         counter.text = "${frameIdx + 1}/${p.frames.size}"
     }
 
@@ -597,7 +781,9 @@ class EditorActivity : Activity(), CanvasHost {
     // ===================================================================
 
     private fun refreshLayerBtn() {
-        layerBtn.text = currentLayer().name
+        val l = currentLayer()
+        layerBtn.text = (if (l.isObject) "◆ " else "") + l.name
+        if (::keyPanel.isInitialized) { refreshKeyPanel(); updateKeyBadges() }
     }
 
     private fun layersDialog() {
@@ -619,14 +805,14 @@ class EditorActivity : Activity(), CanvasHost {
                 val eye = IconButton(this, if (l.visible) Ico.EYE else Ico.EYE_OFF, iconDp = 22f)
                 eye.setOnClickListener { l.visible = !l.visible; p.frames.forEach { it.previewDirty = true }; cv.invalidate(); rebuild() }
                 row.addView(eye)
-                val name = label(l.name, 15f).apply { maxLines = 1 }
+                val name = label((if (l.isObject) "◆ " else "") + l.name, 15f).apply { maxLines = 1 }
                 row.addView(name, lp(0, WRAP, 1f))
                 val up = IconButton(this, Ico.UP, iconDp = 20f)
                 up.setOnClickListener { if (idx < p.layers.size - 1) { swapLayers(idx, idx + 1); rebuild() } }
                 val down = IconButton(this, Ico.DOWN, iconDp = 20f)
                 down.setOnClickListener { if (idx > 0) { swapLayers(idx, idx - 1); rebuild() } }
                 row.addView(up); row.addView(down)
-                row.setOnClickListener { layerIdx = idx; cv.dropShadow(); refreshLayerBtn(); cv.invalidate(); rebuild() }
+                row.setOnClickListener { cv.commitFloat(); layerIdx = idx; cv.dropShadow(); refreshLayerBtn(); cv.invalidate(); rebuild() }
                 row.setOnLongClickListener { layerMenu(idx) { rebuild() }; true }
                 box.addView(row, lp(MATCH, WRAP).apply { bottomMargin = dp(6f) })
             }
@@ -641,6 +827,13 @@ class EditorActivity : Activity(), CanvasHost {
                 layerIdx += 1; p.saveMeta(); cv.dropShadow(); refreshLayerBtn(); cv.invalidate(); rebuild()
             }
             box.addView(add)
+            val addObj = label("◆  Новый слой-объект (автоанимация)", 15f, C.ACCENT).apply { setPadding(dp(8f), dp(6f), dp(8f), dp(6f)) }
+            addObj.setOnClickListener {
+                if (p.layers.size >= 12) return@setOnClickListener
+                p.layers.add(layerIdx + 1, Layer(p.newId(), "Объект ${p.layers.count { it.isObject } + 1}").apply { isObject = true })
+                layerIdx += 1; p.saveMeta(); cv.dropShadow(); refreshLayerBtn(); cv.invalidate(); rebuild()
+            }
+            box.addView(addObj)
             box.addView(label("Долгое нажатие на слой — переименовать / удалить", 12f, C.DIM).apply { setPadding(dp(8f), 0, dp(8f), 0) })
         }
         rebuild()

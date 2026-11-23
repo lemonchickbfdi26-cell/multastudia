@@ -63,7 +63,7 @@ fun Context.sliderRow(title: String, min: Int, max: Int, value: Int, fmt: (Int) 
     return row
 }
 
-enum class Ico { CLOSE, BRUSH, ERASER, LASSO, FILL, TEXT, MORE, UNDO, REDO, COPY, PASTE, ONION, IMAGE, PLAY, PAUSE, PREV, NEXT, PLUS, SHARE, MENU, FIT, LAYERS, EYEDROP, LINE, RECT, OVAL, CHECK, FLIP, FLIP_Y, TRASH, EYE, EYE_OFF, UP, DOWN, GRID }
+enum class Ico { CLOSE, BRUSH, ERASER, LASSO, FILL, TEXT, MORE, UNDO, REDO, COPY, PASTE, ONION, IMAGE, PLAY, PAUSE, PREV, NEXT, PLUS, SHARE, MENU, FIT, LAYERS, EYEDROP, LINE, RECT, OVAL, CHECK, FLIP, FLIP_Y, TRASH, EYE, EYE_OFF, UP, DOWN, GRID, MOVE, CAMERA, KEY }
 
 /** Иконки рисуются кодом — без картинок и без лишних библиотек. */
 class IconView(ctx: Context, var icon: Ico, var color: Int = C.TEXT) : View(ctx) {
@@ -168,6 +168,21 @@ class IconView(ctx: Context, var icon: Ico, var color: Int = C.TEXT) : View(ctx)
             }
             Ico.UP -> { path.moveTo(6f, 15f); path.lineTo(12f, 9f); path.lineTo(18f, 15f); c.drawPath(path, p) }
             Ico.DOWN -> { path.moveTo(6f, 9f); path.lineTo(12f, 15f); path.lineTo(18f, 9f); c.drawPath(path, p) }
+            Ico.MOVE -> {
+                c.drawLine(12f, 3f, 12f, 21f, p); c.drawLine(3f, 12f, 21f, 12f, p)
+                path.moveTo(9f, 6f); path.lineTo(12f, 3f); path.lineTo(15f, 6f)
+                path.moveTo(9f, 18f); path.lineTo(12f, 21f); path.lineTo(15f, 18f)
+                path.moveTo(6f, 9f); path.lineTo(3f, 12f); path.lineTo(6f, 15f)
+                path.moveTo(18f, 9f); path.lineTo(21f, 12f); path.lineTo(18f, 15f)
+                c.drawPath(path, p)
+            }
+            Ico.CAMERA -> {
+                c.drawRoundRect(RectF(3f, 7f, 16f, 18f), 2f, 2f, p)
+                path.moveTo(16f, 11f); path.lineTo(21f, 8f); path.lineTo(21f, 17f); path.lineTo(16f, 14f); c.drawPath(path, p)
+            }
+            Ico.KEY -> {
+                path.moveTo(12f, 4f); path.lineTo(20f, 12f); path.lineTo(12f, 20f); path.lineTo(4f, 12f); path.close(); c.drawPath(path, p)
+            }
             Ico.GRID -> {
                 c.drawRect(4f, 4f, 20f, 20f, p)
                 c.drawLine(9.3f, 4f, 9.3f, 20f, p); c.drawLine(14.6f, 4f, 14.6f, 20f, p)

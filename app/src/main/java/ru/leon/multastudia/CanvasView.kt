@@ -20,7 +20,7 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.sqrt
 
-enum class Tool { BRUSH, ERASER, LASSO, FILL, TEXT, EYEDROP, LINE, RECT, OVAL }
+enum class Tool { BRUSH, ERASER, LASSO, FILL, TEXT, EYEDROP, LINE, RECT, OVAL, MOVE, CAMERA }
 
 class BrushSettings {
     var size = 6f
@@ -39,6 +39,9 @@ interface CanvasHost {
     fun requestText(x: Float, y: Float)
     fun onUndoJump(frameId: Int, layerId: Int)
     fun onFloatMenu()
+    /** Ключ поставлен/изменён (движение объекта или камеры). */
+    fun onKeysChanged(live: Boolean)
+    fun defaultEase(): Ease
 }
 
 @SuppressLint("ViewConstructor")
@@ -101,7 +104,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     private var selTx = 0f; private var selTy = 0f
 
     // ---------- жесты ----------
-    private enum class Mode { NONE, DRAW, FLOAT_DRAG, MENU_TAP, TWO_VIEW, TWO_FLOAT, DONE }
+    private enum class Mode { NONE, DRAW, FLOAT_DRAG, MENU_TAP, XF_DRAG, TWO_VIEW, TWO_FLOAT, DONE }
     private var mode = Mode.NONE
     private val startM = Matrix()
     private var g0x = 0f; private var g0y = 0f; private var gd0 = 1f; private var ga0 = 0f
@@ -154,6 +157,23 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
 
     private fun toWorld(x: Float, y: Float): FloatArray { val a = floatArrayOf(x, y); inv.mapPoints(a); return a }
 
+    /** Матрица текущего слоя (для слоя-объекта — его положение на этом кадре). */
+    private fun curLayerMatrix(): Matrix? {
+        val l = host.currentLayer()
+        if (!l.isObject) return null
+        return p.objectXf(l, host.frameIndex()).matrix()
+    }
+
+    /** Экран → координаты рисунка текущего слоя. */
+    private fun toLayer(x: Float, y: Float): FloatArray {
+        val a = toWorld(x, y)
+        val m = curLayerMatrix() ?: return a
+        val im = Matrix(); if (m.invert(im)) im.mapPoints(a)
+        return a
+    }
+
+    private fun cellFrameId(): Int = if (host.currentLayer().isObject) 0 else host.currentFrame().id
+
     // ================= рисование на экране =================
 
     override fun onDraw(c: Canvas) {
@@ -198,13 +218,26 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         // слои
         val frame = host.currentFrame()
         val cur = host.currentLayer()
+        val fi = host.frameIndex()
         for (l in p.layers) {
             if (!l.visible && l !== cur) continue
-            val bmp = p.cell(l.id, frame.id, false)
-            layerPaint.alpha = if (l.visible) l.opacity else 60
-            if (bmp != null) c.drawBitmap(bmp, 0f, 0f, layerPaint)
-            if (l === cur) drawLive(c, s)
+            val base = if (l.visible) l.opacity else 60
+            if (l.isObject) {
+                val xf = p.objectXf(l, fi)
+                val m = xf.matrix()
+                c.save(); c.concat(m)
+                layerPaint.alpha = (base * xf.alpha).toInt().coerceIn(0, 255)
+                p.cell(l.id, 0, false)?.let { c.drawBitmap(it, 0f, 0f, layerPaint) }
+                if (l === cur) drawLive(c, s * maxOf(0.01f, Math.abs(xf.sx)))
+                c.restore()
+            } else {
+                val bmp = p.cell(l.id, frame.id, false)
+                layerPaint.alpha = base
+                if (bmp != null) c.drawBitmap(bmp, 0f, 0f, layerPaint)
+                if (l === cur) drawLive(c, s)
+            }
         }
+        drawCameraFrame(c, s)
 
         // сетка
         if (grid) {
@@ -224,11 +257,21 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     // ---------- рамка выделения (в координатах экрана) ----------
     private val hp = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    private fun screenQuad(sl: FloatSelection): FloatArray { val q = sl.quad.copyOf(); view.mapPoints(q); return q }
+    private fun layerToScreen(): Matrix {
+        val m = Matrix(curLayerMatrix() ?: Matrix())
+        m.postConcat(view)
+        return m
+    }
+
+    private fun screenQuad(sl: FloatSelection): FloatArray { val q = sl.quad.copyOf(); layerToScreen().mapPoints(q); return q }
 
     /** Точки ручек на экране: 0..3 углы, 4..7 середины сторон, 8 вращение, 9 меню, 10 центр. */
     private fun handlePoints(sl: FloatSelection): FloatArray {
-        val q = screenQuad(sl)
+        val pv = floatArrayOf(sl.pivotX, sl.pivotY); layerToScreen().mapPoints(pv)
+        return handlePointsFor(screenQuad(sl), pv[0], pv[1])
+    }
+
+    private fun handlePointsFor(q: FloatArray, pvx: Float, pvy: Float): FloatArray {
         val out = FloatArray(22)
         System.arraycopy(q, 0, out, 0, 8)
         for (j in 0..3) { val b = (j + 1) % 4; out[8 + j * 2] = (q[j * 2] + q[b * 2]) / 2; out[9 + j * 2] = (q[j * 2 + 1] + q[b * 2 + 1]) / 2 }
@@ -240,16 +283,20 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         }
         outward(out[12], out[13], 16)   // под нижней стороной — вращение
         outward(out[8], out[9], 18)     // над верхней — меню
-        val pv = floatArrayOf(sl.pivotX, sl.pivotY); view.mapPoints(pv)
-        out[20] = pv[0]; out[21] = pv[1]
+        out[20] = pvx; out[21] = pvy
         return out
     }
 
     private fun drawSelectionOverlay(c: Canvas) {
-        val sl = sel ?: return
-        val h = handlePoints(sl)
+        val sl = sel
+        if (sl != null) { drawHandles(c, handlePoints(sl), C.ACCENT, sides = true, menu = true); return }
+        if (playBitmap != null) return
+        if (tool == Tool.MOVE || tool == Tool.CAMERA) xfHandles()?.let { drawHandles(c, it, if (tool == Tool.CAMERA) CAM_COLOR else C.ACCENT, sides = tool == Tool.MOVE, menu = false) }
+    }
+
+    private fun drawHandles(c: Canvas, h: FloatArray, color: Int, sides: Boolean, menu: Boolean) {
         val r = dp(8f).toFloat()
-        hp.style = Paint.Style.STROKE; hp.strokeWidth = dp(1.5f).toFloat(); hp.color = C.ACCENT
+        hp.style = Paint.Style.STROKE; hp.strokeWidth = dp(1.5f).toFloat(); hp.color = color
         val path = Path().apply { moveTo(h[0], h[1]); lineTo(h[2], h[3]); lineTo(h[4], h[5]); lineTo(h[6], h[7]); close() }
         c.drawPath(path, hp)
         fun knob(x: Float, y: Float, rad: Float) {
@@ -257,7 +304,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
             hp.style = Paint.Style.STROKE; hp.color = 0xFF999999.toInt(); hp.strokeWidth = dp(1f).toFloat(); c.drawCircle(x, y, rad, hp)
         }
         // стороны — «таблетки» вдоль стороны
-        for (j in 0..3) {
+        if (sides) for (j in 0..3) {
             val b = (j + 1) % 4
             val ang = Math.toDegrees(atan2((h[b * 2 + 1] - h[j * 2 + 1]).toDouble(), (h[b * 2] - h[j * 2]).toDouble())).toFloat()
             val mx = h[8 + j * 2]; val my = h[9 + j * 2]
@@ -269,7 +316,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         }
         for (i in 0..3) knob(h[i * 2], h[i * 2 + 1], r)
         // центр вращения
-        hp.style = Paint.Style.STROKE; hp.color = C.ACCENT; hp.strokeWidth = dp(2f).toFloat()
+        hp.style = Paint.Style.STROKE; hp.color = color; hp.strokeWidth = dp(2f).toFloat()
         c.drawCircle(h[20], h[21], r, hp)
         // кнопка вращения
         val big = dp(17f).toFloat()
@@ -278,6 +325,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         val ar = RectF(h[16] - big / 2, h[17] - big / 2, h[16] + big / 2, h[17] + big / 2)
         c.drawArc(ar, 200f, 120f, false, hp); c.drawArc(ar, 20f, 120f, false, hp)
         // кнопка «…»
+        if (!menu) return
         knob(h[18], h[19], big)
         hp.style = Paint.Style.FILL; hp.color = 0xFF444444.toInt()
         for (k in -1..1) c.drawCircle(h[18] + k * dp(6f), h[19], dp(1.8f).toFloat(), hp)
@@ -293,7 +341,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         for (i in 0..3) if (near(i * 2)) return H_CORNER + i
         for (j in 0..3) if (near(8 + j * 2)) return H_SIDE + j
         if (hypot(sx - h[20], sy - h[21]) < dp(14f)) return H_PIVOT
-        val w = toWorld(sx, sy)
+        val w = toLayer(sx, sy)
         if (sl.contains(w[0], w[1], dp(6f) / viewScale())) return H_MOVE
         return H_NONE
     }
@@ -323,9 +371,9 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     // ================= правки и отмена =================
 
     private fun currentCell(): Bitmap {
-        val l = host.currentLayer(); val f = host.currentFrame()
-        val cell = p.cell(l.id, f.id, true)!!
-        val key = "${l.id}_${f.id}"
+        val l = host.currentLayer(); val fid = cellFrameId()
+        val cell = p.cell(l.id, fid, true)!!
+        val key = "${l.id}_$fid"
         if (shadow == null || shadowKey != key) {
             shadow = cell.copy(Bitmap.Config.ARGB_8888, true)
             shadowKey = key
@@ -342,9 +390,9 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         if (!r.intersect(0, 0, cell.width, cell.height) || r.isEmpty) return
         val before = UndoManager.cut(sh, r)
         val after = UndoManager.cut(cell, r)
-        undo.push(UndoEntry(host.currentLayer().id, host.currentFrame().id, r, before, after))
+        undo.push(UndoEntry(host.currentLayer().id, cellFrameId(), r, before, after))
         UndoManager.paste(sh, after, r)
-        p.markDirty(host.currentLayer().id, host.currentFrame().id)
+        p.markDirty(host.currentLayer().id, cellFrameId())
         host.onEdited()
         invalidate()
     }
@@ -400,6 +448,20 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         invalidate()
     }
 
+    /** Превратить выделение в рисунок для нового слоя-объекта (размером с мир). */
+    fun floatToObject(): Bitmap? {
+        val sl = sel ?: return null
+        val world = Bitmap.createBitmap(p.worldW, p.worldH, Bitmap.Config.ARGB_8888)
+        val m = Matrix(sl.matrix)
+        curLayerMatrix()?.let { m.postConcat(it) }
+        Canvas(world).drawBitmap(sl.bmp, m, bmpPaint)
+        sel = null
+        sl.cut?.let { commitEdit(it) }
+        host.onFloatChanged(false)
+        invalidate()
+        return world
+    }
+
     fun flipFloatX() { sel?.flipX(); invalidate() }
     fun flipFloatY() { sel?.flipY(); invalidate() }
 
@@ -453,6 +515,116 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         return Rect(l, t, rr + 1, bb + 1)
     }
 
+    // ================= движение объекта и камеры =================
+
+    private val CAM_COLOR = 0xFFFFC107.toInt()
+    private var xfStart: Xf? = null
+    private var xfHandle = H_NONE
+    private var xfTx = 0f; private var xfTy = 0f
+
+    /** Что сейчас двигаем: дорожка, рамка рисунка и положение «по умолчанию». */
+    private fun xfTarget(): Triple<Track, RectF, Xf>? {
+        val fi = host.frameIndex()
+        if (tool == Tool.CAMERA) return Triple(p.camera, canvasRect, p.cameraDefault())
+        val l = host.currentLayer()
+        if (!l.isObject) return null
+        return Triple(l.track, RectF(p.objectBounds(l)), p.objectDefault(l))
+    }
+
+    private fun currentXf(): Xf? {
+        val (track, _, def) = xfTarget() ?: return null
+        return track.eval(p.frames, host.frameIndex(), def)
+    }
+
+    private fun xfHandles(): FloatArray? {
+        val (_, rect, _) = xfTarget() ?: return null
+        val xf = currentXf() ?: return null
+        val m = xf.matrix(); m.postConcat(view)
+        val q = floatArrayOf(rect.left, rect.top, rect.right, rect.top, rect.right, rect.bottom, rect.left, rect.bottom)
+        m.mapPoints(q)
+        val pv = floatArrayOf(xf.x, xf.y); view.mapPoints(pv)
+        return handlePointsFor(q, pv[0], pv[1])
+    }
+
+    private fun drawCameraFrame(c: Canvas, s: Float) {
+        if (tool == Tool.CAMERA || p.camera.isEmpty) return
+        val xf = p.cameraXf(host.frameIndex())
+        val cr = canvasRect
+        val q = floatArrayOf(cr.left, cr.top, cr.right, cr.top, cr.right, cr.bottom, cr.left, cr.bottom)
+        xf.matrix().mapPoints(q)
+        val path = Path().apply { moveTo(q[0], q[1]); lineTo(q[2], q[3]); lineTo(q[4], q[5]); lineTo(q[6], q[7]); close() }
+        ui.strokeWidth = 2f / s; ui.color = CAM_COLOR
+        ui.pathEffect = DashPathEffect(floatArrayOf(12f / s, 8f / s), 0f)
+        c.drawPath(path, ui); ui.pathEffect = null
+    }
+
+    private fun beginXf(sx: Float, sy: Float): Boolean {
+        val h = xfHandles() ?: return false
+        val xf = currentXf() ?: return false
+        val rad = dp(24f).toFloat()
+        fun near(i: Int) = hypot(sx - h[i], sy - h[i + 1]) < rad
+        var hnd = H_NONE
+        if (near(16)) hnd = H_ROTATE
+        if (hnd == H_NONE) for (i in 0..3) if (near(i * 2)) { hnd = H_CORNER + i; break }
+        if (hnd == H_NONE && tool == Tool.MOVE) for (j in 0..3) if (near(8 + j * 2)) { hnd = H_SIDE + j; break }
+        if (hnd == H_NONE && hypot(sx - h[20], sy - h[21]) < dp(16f)) hnd = H_PIVOT
+        if (hnd == H_NONE) {
+            // внутри рамки — двигаем; снаружи для объекта тоже двигаем (удобно хватать мелкие объекты)
+            hnd = H_MOVE
+        }
+        xfHandle = hnd
+        xfStart = xf.copy()
+        val w = toWorld(sx, sy); xfTx = w[0]; xfTy = w[1]
+        return true
+    }
+
+    private fun moveXf(wx: Float, wy: Float) {
+        val st = xfStart ?: return
+        val (track, _, _) = xfTarget() ?: return
+        val n = st.copy()
+        val dx = wx - xfTx; val dy = wy - xfTy
+        when {
+            xfHandle == H_MOVE -> { n.x = st.x + dx; n.y = st.y + dy }
+            xfHandle == H_ROTATE -> {
+                val a0 = Math.toDegrees(atan2((xfTy - st.y).toDouble(), (xfTx - st.x).toDouble()))
+                val a1 = Math.toDegrees(atan2((wy - st.y).toDouble(), (wx - st.x).toDouble()))
+                n.rot = st.rot + (a1 - a0).toFloat()
+            }
+            xfHandle in H_CORNER until H_CORNER + 4 -> {
+                val d0 = maxOf(1f, hypot(xfTx - st.x, xfTy - st.y))
+                val k = (hypot(wx - st.x, wy - st.y) / d0).coerceAtLeast(0.02f)
+                n.sx = st.sx * k; n.sy = st.sy * k
+            }
+            xfHandle in H_SIDE until H_SIDE + 4 -> {
+                val j = xfHandle - H_SIDE
+                val rad = Math.toRadians(st.rot.toDouble())
+                val ax: Float; val ay: Float
+                if (j == 1 || j == 3) { ax = Math.cos(rad).toFloat(); ay = Math.sin(rad).toFloat() }
+                else { ax = -Math.sin(rad).toFloat(); ay = Math.cos(rad).toFloat() }
+                val d0 = (xfTx - st.x) * ax + (xfTy - st.y) * ay
+                val d1 = (wx - st.x) * ax + (wy - st.y) * ay
+                if (Math.abs(d0) > 1f) {
+                    var k = d1 / d0
+                    if (Math.abs(k) < 0.02f) k = if (k < 0) -0.02f else 0.02f
+                    if (j == 1 || j == 3) n.sx = st.sx * k else n.sy = st.sy * k
+                }
+            }
+            xfHandle == H_PIVOT -> {
+                // переносим точку опоры, а рисунок остаётся на месте
+                val nx = st.x + dx; val ny = st.y + dy
+                val im = Matrix(); if (st.matrix().invert(im)) {
+                    val b = floatArrayOf(nx, ny); im.mapPoints(b)
+                    n.px = b[0]; n.py = b[1]; n.x = nx; n.y = ny
+                }
+            }
+        }
+        val fid = host.currentFrame().id
+        val ease = track.keyAt(fid)?.ease ?: host.defaultEase()
+        track.set(fid, n, ease)
+        host.onKeysChanged(true)
+        invalidate()
+    }
+
     // ================= текст, пипетка =================
 
     fun drawText(text: String, x: Float, y: Float) {
@@ -474,13 +646,22 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         commitEdit(dirty)
     }
 
-    private fun sample(wx: Float, wy: Float): Int {
-        val x = wx.toInt(); val y = wy.toInt()
-        if (x < 0 || y < 0 || x >= p.worldW || y >= p.worldH) return p.bgColor
+    private fun sample(lx: Float, ly: Float): Int {
+        val wp = floatArrayOf(lx, ly)
+        curLayerMatrix()?.mapPoints(wp)
         val f = host.currentFrame()
+        val fi = host.frameIndex()
         for (l in p.layers.asReversed()) {
             if (!l.visible) continue
-            val bmp = p.cell(l.id, f.id, false) ?: continue
+            val pt = wp.copyOf()
+            val bmp: Bitmap
+            if (l.isObject) {
+                bmp = p.cell(l.id, 0, false) ?: continue
+                val im = Matrix(); if (!p.objectXf(l, fi).matrix().invert(im)) continue
+                im.mapPoints(pt)
+            } else bmp = p.cell(l.id, f.id, false) ?: continue
+            val x = pt[0].toInt(); val y = pt[1].toInt()
+            if (x < 0 || y < 0 || x >= bmp.width || y >= bmp.height) continue
             val c = bmp.getPixel(x, y)
             if (Color.alpha(c) > 40) return c or 0xFF000000.toInt()
         }
@@ -501,8 +682,12 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = e.x; downY = e.y
-                val w = toWorld(e.x, e.y)
+                val w = toLayer(e.x, e.y)
                 mode = Mode.DRAW
+                if (sel == null && (tool == Tool.MOVE || tool == Tool.CAMERA)) {
+                    if (!beginXf(e.x, e.y)) mode = Mode.DONE else mode = Mode.XF_DRAG
+                    return true
+                }
                 val sl = sel
                 if (sl != null) {
                     val hnd = hitHandle(e.x, e.y)
@@ -520,6 +705,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (e.pointerCount == 2) {
                     val wasFloat = mode == Mode.FLOAT_DRAG && sel != null
+                    if (mode == Mode.XF_DRAG) host.onKeysChanged(false)
                     cancelTool()
                     mode = if (wasFloat) Mode.TWO_FLOAT else Mode.TWO_VIEW
                     startTwo(e)
@@ -529,14 +715,14 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
                 when (mode) {
                     Mode.DRAW -> {
                         for (h in 0 until e.historySize) {
-                            val w = toWorld(e.getHistoricalX(0, h), e.getHistoricalY(0, h)); moveTool(w[0], w[1])
+                            val w = toLayer(e.getHistoricalX(0, h), e.getHistoricalY(0, h)); moveTool(w[0], w[1])
                         }
-                        val w = toWorld(e.x, e.y); moveTool(w[0], w[1])
+                        val w = toLayer(e.x, e.y); moveTool(w[0], w[1])
                     }
                     Mode.FLOAT_DRAG -> {
                         val sl = sel
                         if (sl != null) {
-                            val w = toWorld(e.x, e.y)
+                            val w = toLayer(e.x, e.y)
                             val dx = w[0] - selTx; val dy = w[1] - selTy
                             when {
                                 handle == H_MOVE -> sl.moveFrom(selStart, selPivX, selPivY, dx, dy)
@@ -549,17 +735,20 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
                         }
                     }
                     Mode.TWO_VIEW, Mode.TWO_FLOAT -> if (e.pointerCount >= 2) moveTwo(e)
+                    Mode.XF_DRAG -> { val w = toWorld(e.x, e.y); moveXf(w[0], w[1]) }
                     else -> {}
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 if (mode == Mode.TWO_VIEW) snapRotation()
+                if (mode == Mode.XF_DRAG) host.onKeysChanged(false)
                 mode = Mode.DONE
             }
             MotionEvent.ACTION_UP -> {
                 if (mode == Mode.MENU_TAP) host.onFloatMenu()
+                if (mode == Mode.XF_DRAG) host.onKeysChanged(false)
                 if (mode == Mode.DRAW) {
-                    val w = toWorld(e.x, e.y); endTool(w[0], w[1])
+                    val w = toLayer(e.x, e.y); endTool(w[0], w[1])
                 }
                 mode = Mode.NONE
             }
@@ -571,7 +760,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     private fun startTwo(e: MotionEvent) {
         val ax = e.getX(0); val ay = e.getY(0); val bx = e.getX(1); val by = e.getY(1)
         if (mode == Mode.TWO_FLOAT) {
-            val a = toWorld(ax, ay); val b = toWorld(bx, by)
+            val a = toLayer(ax, ay); val b = toLayer(bx, by)
             g0x = (a[0] + b[0]) / 2; g0y = (a[1] + b[1]) / 2
             gd0 = maxOf(1f, hypot(b[0] - a[0], b[1] - a[1])); ga0 = Math.toDegrees(atan2((b[1] - a[1]).toDouble(), (b[0] - a[0]).toDouble())).toFloat()
             startM.reset()
@@ -586,7 +775,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     private fun moveTwo(e: MotionEvent) {
         var ax = e.getX(0); var ay = e.getY(0); var bx = e.getX(1); var by = e.getY(1)
         if (mode == Mode.TWO_FLOAT) {
-            val a = toWorld(ax, ay); val b = toWorld(bx, by)
+            val a = toLayer(ax, ay); val b = toLayer(bx, by)
             ax = a[0]; ay = a[1]; bx = b[0]; by = b[1]
         }
         val cx = (ax + bx) / 2; val cy = (ay + by) / 2
@@ -701,6 +890,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
             }
             Tool.TEXT -> host.requestText(x, y)
             Tool.EYEDROP -> host.onColorPicked(sample(x, y), true)
+            Tool.MOVE, Tool.CAMERA -> {}
         }
         invalidate()
     }
