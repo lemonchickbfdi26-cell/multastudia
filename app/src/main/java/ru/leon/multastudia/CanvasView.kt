@@ -229,7 +229,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
             if (l.isRig) {
                 layerPaint.alpha = base
                 val pose = p.rigPose(l, fi)
-                val solved = RigMath.solve(pose)
+                val solved = RigMath.solve(pose, l.rig!!.bones())
                 RigRender.draw(c, l.rig!!, pose, layerPaint, solved)
                 if (l === cur && tool == Tool.POSE) RigRender.drawBones(c, solved, poseBone, 2.5f / s, 7f / s, hp)
             } else if (l.isObject) {
@@ -762,12 +762,23 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
 
     private fun rigLayer(): Layer? = host.currentLayer().takeIf { it.isRig }
 
+    private fun bones(): List<Skel.B> = rigLayer()?.rig?.bones() ?: Skel.base
+
+    /** Переложить выбранную кость (и всё на ней) назад(−) / вперёд(+) — меняет порядок слоёв в позе. */
+    fun depthBone(dz: Float) {
+        val l = rigLayer() ?: return
+        val n = currentPose()?.copy() ?: return
+        val b = poseBone.coerceIn(0, bones().size - 1)
+        n.off[b] = n.off[b] + V3(0f, 0f, dz)
+        setPose(l, n); host.onKeysChanged(false)
+    }
+
     fun currentPose(): Pose? { val l = rigLayer() ?: return null; return p.rigPose(l, host.frameIndex()) }
 
     private fun solvedScreen(pose: Pose): Pair<FloatArray, FloatArray> {
-        val s = RigMath.solve(pose)
-        val hd = FloatArray(Skel.N * 2); val tl = FloatArray(Skel.N * 2)
-        for (b in 0 until Skel.N) { hd[b * 2] = s.head[b].x; hd[b * 2 + 1] = s.head[b].y; tl[b * 2] = s.tail[b].x; tl[b * 2 + 1] = s.tail[b].y }
+        val s = RigMath.solve(pose, bones())
+        val hd = FloatArray(s.n * 2); val tl = FloatArray(s.n * 2)
+        for (b in 0 until s.n) { hd[b * 2] = s.head[b].x; hd[b * 2 + 1] = s.head[b].y; tl[b * 2] = s.tail[b].x; tl[b * 2 + 1] = s.tail[b].y }
         view.mapPoints(hd); view.mapPoints(tl)
         return hd to tl
     }
@@ -779,14 +790,14 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
         var best = -3; var bd = rad
         val dRoot = hypot(sx - hd[0], sy - hd[1])
         if (dRoot < bd) { best = -2; bd = dRoot }
-        for (b in 0 until Skel.N) {
+        for (b in 0 until hd.size / 2) {
             val d = hypot(sx - tl[b * 2], sy - tl[b * 2 + 1])
             if (d < bd) { best = b; bd = d }
         }
         if (best == -3) {
             // нажали на саму кость — просто выбираем её
             var nb = -1; var nd = dp(18f).toFloat()
-            for (b in 0 until Skel.N) {
+            for (b in 0 until hd.size / 2) {
                 val d = distToSeg(sx, sy, hd[b * 2], hd[b * 2 + 1], tl[b * 2], tl[b * 2 + 1])
                 if (d < nd) { nb = b; nd = d }
             }
@@ -825,7 +836,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
             } else {
                 val (hd, _) = solvedScreen(st)
                 val a1 = PoseEdit.screenAngle(hd[b * 2], hd[b * 2 + 1], sx, sy)
-                PoseEdit.rotateWorld(n, b, Q.axis(0f, 0f, 1f, a1 - poseA0), st)
+                PoseEdit.rotateWorld(n, b, Q.axis(0f, 0f, 1f, a1 - poseA0), st, bones())
                 if (poseMode == 1) {
                     val d1 = hypot(sx - hd[b * 2], sy - hd[b * 2 + 1])
                     n.stretch[b] = (st.stretch[b] * d1 / poseD0).coerceIn(0.1f, 6f)
@@ -847,11 +858,11 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     fun tiltBone(deg: Float) {
         val l = rigLayer() ?: return
         val st = currentPose()?.copy() ?: return
-        val s = RigMath.solveLocal(st)
-        val b = poseBone
+        val s = RigMath.solveLocal(st, bones())
+        val b = poseBone.coerceIn(0, s.n - 1)
         val dx = s.tail[b].x - s.head[b].x; val dy = s.tail[b].y - s.head[b].y
         val n = st.copy()
-        PoseEdit.rotateWorld(n, b, Q.axis(-dy, dx, 0f, deg), st)
+        PoseEdit.rotateWorld(n, b, Q.axis(-dy, dx, 0f, deg), st, bones())
         setPose(l, n); host.onKeysChanged(false)
     }
 
@@ -859,11 +870,11 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
     fun twistBone(deg: Float) {
         val l = rigLayer() ?: return
         val st = currentPose()?.copy() ?: return
-        val s = RigMath.solveLocal(st)
-        val b = poseBone
+        val s = RigMath.solveLocal(st, bones())
+        val b = poseBone.coerceIn(0, s.n - 1)
         val v = s.tail[b] - s.head[b]
         val n = st.copy()
-        PoseEdit.rotateWorld(n, b, Q.axis(v.x, v.y, v.z, deg), st)
+        PoseEdit.rotateWorld(n, b, Q.axis(v.x, v.y, v.z, deg), st, bones())
         setPose(l, n); host.onKeysChanged(false)
     }
 

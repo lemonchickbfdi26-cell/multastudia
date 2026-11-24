@@ -565,7 +565,9 @@ class EditorActivity : Activity(), CanvasHost {
         posePanel.removeAllViews()
         val pose = cv.currentPose() ?: return
         val r1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        r1.addView(label("🦴 " + Skel.bones[cv.poseBone].title, 14f).apply { maxLines = 1 }, lp(0, WRAP, 1f))
+        val bs = currentLayer().rig!!.bones()
+        if (cv.poseBone >= bs.size) cv.poseBone = 1
+        r1.addView(label("🦴 " + bs[cv.poseBone].title, 14f).apply { maxLines = 1 }, lp(0, WRAP, 1f))
         r1.addView(label("Мастерская", 13f).apply {
             background = rounded(C.ACCENT, dp(12f).toFloat()); setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
             setOnClickListener { openWorkshop(currentLayer()) }
@@ -589,6 +591,14 @@ class EditorActivity : Activity(), CanvasHost {
         btn("Скрутить") { cv.twistBone(30f) }
         btn("Сброс") { cv.resetBone() }
         posePanel.addView(r3, lp(MATCH, WRAP).apply { topMargin = dp(4f) })
+        val r4 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        fun btn4(t: String, act: () -> Unit) = r4.addView(label(t, 12f).apply {
+            gravity = Gravity.CENTER; background = rounded(C.CARD2, dp(10f).toFloat()); setPadding(dp(4f), dp(6f), dp(4f), dp(6f))
+            setOnClickListener { act(); refreshPosePanel() }
+        }, lp(0, WRAP, 1f).apply { rightMargin = dp(4f) })
+        btn4("⤓ Назад (за тело)") { cv.depthBone(-60f) }
+        btn4("⤒ Вперёд") { cv.depthBone(60f) }
+        posePanel.addView(r4, lp(MATCH, WRAP).apply { topMargin = dp(4f) })
         val yawNorm = (((pose.yaw + 180f) % 360f + 360f) % 360f - 180f).toInt()
         posePanel.addView(sliderRow("Поворот", -180, 180, yawNorm, { "$it°" }) { cv.setRigGlobal(yaw = it.toFloat()) })
         posePanel.addView(sliderRow("Наклон", -60, 60, pose.pitch.toInt(), { "$it°" }) { cv.setRigGlobal(pitch = it.toFloat()) })
