@@ -77,6 +77,7 @@ class EditorActivity : Activity(), CanvasHost {
         const val REQ_GIF = 2
         const val REQ_PNG_DIR = 3
         const val REQ_PNG_ONE = 4
+        const val REQ_MP4 = 5
     }
 
     // ===================================================================
@@ -1116,15 +1117,44 @@ class EditorActivity : Activity(), CanvasHost {
     private fun exportMenu() {
         stopPlay(); cv.commitFloat()
         AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Создать фильм")
-            .setItems(arrayOf("GIF-анимация", "Кадры PNG (в папку)", "Только этот кадр PNG")) { _, w ->
+            .setItems(arrayOf("Видео MP4", "GIF-анимация", "Кадры PNG (в папку)", "Только этот кадр PNG")) { _, w ->
                 when (w) {
-                    0 -> createDoc("image/gif", safeName() + ".gif", REQ_GIF)
-                    1 -> try {
+                    0 -> videoQualityDialog()
+                    1 -> createDoc("image/gif", safeName() + ".gif", REQ_GIF)
+                    2 -> try {
                         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_PNG_DIR)
                     } catch (e: Throwable) { toast("Не получилось открыть выбор папки") }
-                    2 -> createDoc("image/png", safeName() + "_${frameIdx + 1}.png", REQ_PNG_ONE)
+                    3 -> createDoc("image/png", safeName() + "_${frameIdx + 1}.png", REQ_PNG_ONE)
                 }
             }.show()
+    }
+
+    private var videoSize = 1920 to 1080
+
+    private fun videoQualityDialog() {
+        val opts = listOf(1080, 720, minOf(p.canvasW, p.canvasH))
+        val labels = opts.mapIndexed { i, t ->
+            val (vw, vh) = VideoExport.pickSize(p, t)
+            (when (i) { 0 -> "Full HD — лучшее"; 1 -> "HD"; else -> "Как холст" }) + "  ($vw×$vh)"
+        }.toTypedArray()
+        AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Качество видео")
+            .setItems(labels) { _, i ->
+                videoSize = VideoExport.pickSize(p, opts[i])
+                createDoc("video/mp4", safeName() + ".mp4", REQ_MP4)
+            }.show()
+    }
+
+    private fun exportMp4(uri: Uri) {
+        val (vw, vh) = videoSize
+        runExport("Создаю видео…") { progress ->
+            val tmp = File(cacheDir, "export.mp4")
+            tmp.delete()
+            VideoExport(p, vw, vh).run(tmp, progress)
+            progress("Сохраняю файл…")
+            contentResolver.openOutputStream(uri)!!.use { os -> tmp.inputStream().use { it.copyTo(os) } }
+            tmp.delete()
+            "Видео сохранено ($vw×$vh, ${p.fps} кадров/с)"
+        }
     }
 
     private fun createDoc(mime: String, name: String, req: Int) {
@@ -1144,6 +1174,7 @@ class EditorActivity : Activity(), CanvasHost {
                 cv.startFloat(bmp)
             }
             REQ_GIF -> exportGif(uri)
+            REQ_MP4 -> exportMp4(uri)
             REQ_PNG_DIR -> exportPngs(uri)
             REQ_PNG_ONE -> exportOne(uri)
         }
