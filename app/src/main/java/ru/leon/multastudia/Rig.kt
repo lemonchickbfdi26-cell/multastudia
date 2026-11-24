@@ -365,6 +365,9 @@ class Rig {
             val e = bs[i]
             putBone(i, Skel.B(e.title, c, e.head, e.tail, e.rigid, e.chainChild, e.extra))
         }
+        // жёсткие кусочки на этой кости остаются на месте (середина кости сдвинулась)
+        val sh = (old.tail - old.head) * 0.25f
+        for (pt in parts) if (pt.bone == b && !pt.bendy) { pt.across += sh.x; pt.along += sh.y }
         changed()
         return c
     }
