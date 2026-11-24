@@ -196,6 +196,18 @@ class RigWorkshop(
             partsBox.addView(row, lp(MATCH, WRAP).apply { bottomMargin = ctx.dp(6f) })
             if (pt === part) addEditor(pt)
         }
+        val cp = clip
+        if (cp != null) {
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, ctx.dp(8f), 0, 0) }
+            fun pb(t: String, mirror: Boolean) = row.addView(ctx.label(t, 13f, Color.WHITE).apply {
+                gravity = Gravity.CENTER; background = rounded(C.PURPLE, ctx.dp(12f).toFloat())
+                setPadding(ctx.dp(8f), ctx.dp(10f), ctx.dp(8f), ctx.dp(10f))
+                setOnClickListener { pastePart(cp, mirror) }
+            }, lp(0, WRAP, 1f).apply { rightMargin = ctx.dp(6f) })
+            pb("📋 Вставить сюда", false)
+            pb("📋 Вставить зеркально", true)
+            partsBox.addView(row)
+        }
         val add = ctx.label("+  Вставить картинку для этой кости", 14f, C.ACCENT).apply { setPadding(ctx.dp(4f), ctx.dp(10f), 0, ctx.dp(4f)) }
         add.setOnClickListener {
             pickImage { bmp ->
@@ -229,6 +241,21 @@ class RigWorkshop(
                 }.show()
             }
         }, lp(MATCH, WRAP).apply { bottomMargin = ctx.dp(8f) })
+        val tools = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        fun tb(t: String, act: () -> Unit) = tools.addView(ctx.label(t, 12f).apply {
+            gravity = Gravity.CENTER; background = rounded(C.CARD, ctx.dp(10f).toFloat())
+            setPadding(ctx.dp(4f), ctx.dp(8f), ctx.dp(4f), ctx.dp(8f))
+            setOnClickListener { act() }
+        }, lp(0, WRAP, 1f).apply { rightMargin = ctx.dp(4f) })
+        tb("Копировать") {
+            clip = pt; clipBmp = pt.bmp?.copy(Bitmap.Config.ARGB_8888, false)
+            android.widget.Toast.makeText(ctx, "Скопировано. Выбери другую кость и нажми «Вставить»", android.widget.Toast.LENGTH_SHORT).show()
+            rebuildParts()
+        }
+        tb("Отразить ↔") { pt.bmp?.let { pt.bmp = flip(it, true); pt.across = -pt.across; pt.rot = -pt.rot; p.savePart(layer.id, pt); changed(); rebuildParts() } }
+        tb("Отразить ↕") { pt.bmp?.let { pt.bmp = flip(it, false); p.savePart(layer.id, pt); changed(); rebuildParts() } }
+        tb("На другую кость") { moveToBone(pt) }
+        box.addView(tools, lp(MATCH, WRAP).apply { bottomMargin = ctx.dp(8f) })
         val bmp = pt.bmp
         val probe = Part(0, pt.bone, pt.view).apply { bendy = pt.bendy }
         if (bmp != null) RigRender.autoFit(probe, bmp, rig.bones())
@@ -265,6 +292,35 @@ class RigWorkshop(
             }
         })
         partsBox.addView(box)
+    }
+
+    private fun flip(b: Bitmap, horizontal: Boolean): Bitmap {
+        val m = android.graphics.Matrix()
+        if (horizontal) m.setScale(-1f, 1f, b.width / 2f, b.height / 2f) else m.setScale(1f, -1f, b.width / 2f, b.height / 2f)
+        return Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+    }
+
+    private fun pastePart(src: Part, mirror: Boolean) {
+        val b0 = clipBmp ?: src.bmp ?: return
+        val pt = Part(rig.nextPartId++, bone, src.view)
+        pt.bmp = if (mirror) flip(b0, true) else b0.copy(Bitmap.Config.ARGB_8888, false)
+        pt.bendy = src.bendy && Skel.canBend(rig.bones(), bone)
+        pt.scale = src.scale; pt.along = src.along; pt.rot = if (mirror) -src.rot else src.rot
+        pt.across = if (mirror) -src.across else src.across; pt.z = src.z
+        if (pt.bendy != src.bendy) RigRender.autoFit(pt, pt.bmp!!, rig.bones())
+        rig.parts.add(pt); p.savePart(layer.id, pt)
+        part = pt; changed(); rebuildChips(); rebuildParts()
+    }
+
+    private fun moveToBone(pt: Part) {
+        val bs = rig.bones()
+        AlertDialog.Builder(ctx, R.style.DialogTheme).setTitle("Перенести на кость")
+            .setItems(bs.map { it.title }.toTypedArray()) { _, w ->
+                pt.bone = w
+                if (pt.bendy && !Skel.canBend(bs, w)) { pt.bendy = false }
+                bone = w; part = pt
+                changed(); rebuildChips(); rebuildParts()
+            }.show()
     }
 
     /** Просмотр: персонаж в спокойной позе, крутится пальцем. */
@@ -325,6 +381,10 @@ class RigWorkshop(
     }
 
     companion object {
+        /** Буфер: скопированный кусочек (живёт, пока открыто приложение). */
+        var clip: Part? = null
+        var clipBmp: Bitmap? = null
+
         /** Диалог «Отдать кусочек персонажу». */
         fun askPart(ctx: Context, rigs: List<Layer>, bmp: Bitmap, p: Project, done: (Layer, Part) -> Unit) {
             val box = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(ctx.dp(18f), ctx.dp(8f), ctx.dp(18f), 0) }
