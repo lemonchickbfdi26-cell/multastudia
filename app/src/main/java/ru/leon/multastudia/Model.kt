@@ -359,7 +359,6 @@ class Project(val dir: File) {
                 p.nextId = o.optInt("nextId", 1000)
                 p.coverId = o.optInt("cover", 0)
                 p.camera = Track.fromJson(o.optJSONArray("camera"))
-                for (l in p.layers) p.loadParts(l)
                 val la = o.getJSONArray("layers")
                 for (i in 0 until la.length()) {
                     val j = la.getJSONObject(i)
@@ -374,6 +373,7 @@ class Project(val dir: File) {
                     val j = fa.getJSONObject(i)
                     p.frames.add(Frame(j.getInt("id")).apply { hold = j.optInt("hold", 1); previewDirty = false })
                 }
+                for (l in p.layers) p.loadParts(l)
                 if (p.layers.isEmpty()) p.layers.add(Layer(p.newId(), "Слой 1"))
                 if (p.frames.isEmpty()) p.frames.add(Frame(p.newId()))
                 p
