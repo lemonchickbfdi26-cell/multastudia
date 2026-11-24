@@ -285,10 +285,22 @@ class Rig {
     var track = PoseTrack()
     var nextPartId = 1
     val extra = ArrayList<Skel.B>()
+    /** Свои пропорции для костей шаблона (индекс → кость). */
+    val over = HashMap<Int, Skel.B>()
+    /** Где персонаж стоит, пока нет ключей (x, y, масштаб). */
+    var home: FloatArray? = null
     private var cache: List<Skel.B>? = null
 
-    fun bones(): List<Skel.B> { cache?.let { return it }; val l = Skel.base + extra; cache = l; return l }
+    fun bones(): List<Skel.B> {
+        cache?.let { return it }
+        val l = Skel.base.mapIndexed { i, b -> over[i] ?: b } + extra
+        cache = l; return l
+    }
     private fun changed() { cache = null }
+
+    private fun putBone(i: Int, b: Skel.B) {
+        if (i < Skel.base.size) over[i] = b else extra[i - Skel.base.size] = b
+    }
 
     /** Добавить свою кость. angle — направление на виде спереди (90° — вниз), depth — к зрителю(+)/от зрителя(−). */
     fun addBone(title: String, parent: Int, fromEnd: Boolean, angle: Float, len: Float, depth: Float): Int {
@@ -308,17 +320,17 @@ class Rig {
     /** Поменять направление/длину своей кости; всё, что на ней висит, переедет следом. */
     fun setBone(b: Int, title: String, angle: Float, len: Float, depth: Float) {
         val bs = bones()
-        val ei = b - Skel.base.size
-        if (ei < 0) return
         val old = bs[b]
         val newTail = old.head + dirVec(angle, len, depth)
         val delta = newTail - old.tail
-        extra[ei] = Skel.B(title, old.parent, old.head, newTail, extra = true)
-        // сдвинуть потомков
+        putBone(b, Skel.B(title, old.parent, old.head, newTail, old.rigid, old.chainChild, old.extra))
+        // сдвинуть то, что висит на конце этой кости (и дальше по цепочке)
         fun shift(parent: Int) {
-            for (i in bs.indices) if (bs[i].parent == parent && i >= Skel.base.size) {
-                val e = extra[i - Skel.base.size]
-                extra[i - Skel.base.size] = Skel.B(e.title, e.parent, e.head + delta, e.tail + delta, extra = true)
+            for (i in bs.indices) if (bs[i].parent == parent) {
+                val e = bs[i]
+                val attached = (e.head - old.tail).len() < 1f || parent != b
+                if (!attached) continue
+                putBone(i, Skel.B(e.title, e.parent, e.head + delta, e.tail + delta, e.rigid, e.chainChild, e.extra))
                 shift(i)
             }
         }
@@ -354,7 +366,10 @@ class Rig {
     fun toJson(): JSONObject {
         val pa = JSONArray(); for (p in parts) pa.put(p.toJson())
         val ex = JSONArray(); for (b in extra) ex.put(b.toJson())
-        return JSONObject().put("parts", pa).put("track", track.toJson(bones().size)).put("next", nextPartId).put("extra", ex)
+        val ov = JSONArray(); for ((i, b) in over) ov.put(JSONObject().put("i", i).put("h", b.head.toJson()).put("e", b.tail.toJson()).put("t", b.title))
+        val o = JSONObject().put("parts", pa).put("track", track.toJson(bones().size)).put("next", nextPartId).put("extra", ex).put("base", ov)
+        home?.let { o.put("home", JSONArray().put(it[0].toDouble()).put(it[1].toDouble()).put(it[2].toDouble())) }
+        return o
     }
 
     companion object {
@@ -364,6 +379,14 @@ class Rig {
             if (pa != null) for (i in 0 until pa.length()) r.parts.add(Part.fromJson(pa.getJSONObject(i)))
             val ex = o.optJSONArray("extra")
             if (ex != null) for (i in 0 until ex.length()) r.extra.add(Skel.B.fromJson(ex.getJSONObject(i)))
+            val ov = o.optJSONArray("base")
+            if (ov != null) for (i in 0 until ov.length()) {
+                val j = ov.getJSONObject(i); val idx = j.getInt("i")
+                if (idx !in Skel.base.indices) continue
+                val b = Skel.base[idx]
+                r.over[idx] = Skel.B(j.optString("t", b.title), b.parent, V3.fromJson(j.getJSONArray("h")), V3.fromJson(j.getJSONArray("e")), b.rigid, b.chainChild)
+            }
+            o.optJSONArray("home")?.let { h -> r.home = floatArrayOf(h.getDouble(0).toFloat(), h.getDouble(1).toFloat(), h.getDouble(2).toFloat()) }
             r.track = PoseTrack.fromJson(o.optJSONArray("track"))
             r.nextPartId = o.optInt("next", r.parts.maxOfOrNull { it.id + 1 } ?: 1)
             return r
@@ -509,12 +532,15 @@ object RigRender {
 
         val rows = ROWS_PER_BONE * chain.size
         val fs = pt.scale * pose.scale
+        // цепочка растёт вверх (хвост, уши) — картинку кладём «низом» к началу, чтобы не перевернулась
+        val up = bs[chain.last()].tail.y < bs[chain[0]].head.y
+        val sg = if (up) -1f else 1f
         val w = bmp.width.toFloat(); val hgt = bmp.height.toFloat()
         val verts = FloatArray((rows + 1) * 2 * 2)
         val eps = restL * 0.01f
         for (r in 0..rows) {
             val yImg = hgt * r / rows
-            val d = (yImg - hgt / 2) * pt.scale + restL / 2 + pt.along
+            val d = sg * (yImg - hgt / 2) * pt.scale + restL / 2 + pt.along
             val dc = d.coerceIn(0f, restL)
             val a = curve(dc - eps); val b = curve(dc + eps)
             var tx = b[0] - a[0]; var ty = b[1] - a[1]
@@ -524,7 +550,7 @@ object RigRender {
             if (d != dc) { val extra = (d - dc) * pose.scale; px += tx * extra; py += ty * extra }
             val nx = -ty; val ny = tx
             for (col in 0..1) {
-                val off = ((if (col == 0) 0f else w) - w / 2) * fs * (if (mirror) -1f else 1f) + pt.across * pose.scale
+                val off = sg * ((if (col == 0) 0f else w) - w / 2) * fs * (if (mirror) -1f else 1f) + sg * pt.across * pose.scale
                 val i = (r * 2 + col) * 2
                 verts[i] = px - nx * off
                 verts[i + 1] = py - ny * off

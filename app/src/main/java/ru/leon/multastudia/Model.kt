@@ -164,7 +164,12 @@ class Project(val dir: File) {
         return Pose(marginX + canvasW / 2f, marginY + canvasH / 2f + 30f * sc).apply { scale = sc }
     }
 
-    fun rigPose(l: Layer, idx: Int): Pose = l.rig!!.track.eval(frames, idx, rigDefault())
+    fun rigHome(r: Rig): Pose {
+        val h = r.home ?: return rigDefault()
+        return Pose(h[0], h[1]).apply { scale = h[2] }
+    }
+
+    fun rigPose(l: Layer, idx: Int): Pose = l.rig!!.track.eval(frames, idx, rigHome(l.rig!!))
 
     private fun partFile(layerId: Int, partId: Int) = File(dir, "rp_${layerId}_$partId.png")
 

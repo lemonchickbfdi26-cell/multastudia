@@ -147,7 +147,7 @@ class RigWorkshop(
                 changed(); rebuildChips(); rebuildParts()
             }
             .setNegativeButton("Отмена", null)
-        if (edit != null) b.setNeutralButton("Удалить кость") { _, _ ->
+        if (edit != null && bs[edit].extra) b.setNeutralButton("Удалить кость") { _, _ ->
             AlertDialog.Builder(ctx, R.style.DialogTheme).setTitle("Удалить кость «${bs[edit].title}»?")
                 .setMessage("Удалятся и кости, которые растут из неё, и их кусочки.")
                 .setPositiveButton("Удалить") { _, _ ->
@@ -175,7 +175,7 @@ class RigWorkshop(
         val b = bs[bone]
         val head = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(ctx.label(b.title, 15f).apply { setPadding(0, ctx.dp(4f), 0, ctx.dp(6f)) }, lp(0, WRAP, 1f))
-        if (b.extra) head.addView(ctx.label("Настроить кость", 13f, C.ACCENT).apply {
+        head.addView(ctx.label("Настроить кость", 13f, C.ACCENT).apply {
             setPadding(ctx.dp(8f), ctx.dp(6f), 0, ctx.dp(6f)); setOnClickListener { boneDialog(bone) }
         })
         partsBox.addView(head)
