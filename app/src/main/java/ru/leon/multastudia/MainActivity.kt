@@ -41,6 +41,14 @@ class MainActivity : Activity() {
             setOnClickListener { newProjectDialog() }
         }
         root.addView(newBtn, lp(MATCH, dp(54f)).apply { setMargins(dp(16f), dp(16f), dp(16f), dp(8f)) })
+        val openBtn = label("Открыть копию проекта (.zip)", 14f, C.ACCENT).apply {
+            gravity = Gravity.CENTER; setPadding(0, dp(6f), 0, dp(6f))
+            setOnClickListener {
+                val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }
+                try { startActivityForResult(i, REQ_IMPORT) } catch (e: Throwable) {}
+            }
+        }
+        root.addView(openBtn, lp(MATCH, WRAP))
 
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16f), dp(8f), dp(16f), dp(16f)) }
         val scroll = ScrollView(this); scroll.addView(list)
@@ -100,12 +108,75 @@ class MainActivity : Activity() {
 
     private fun cardMenu(dir: File, name: String) {
         AlertDialog.Builder(this, R.style.DialogTheme).setTitle(name)
-            .setItems(arrayOf("Открыть", "Удалить")) { _, w ->
+            .setItems(arrayOf("Открыть", "Сохранить копию (.zip)", "Удалить")) { _, w ->
                 if (w == 0) open(dir)
+                else if (w == 1) {
+                    pendingExport = dir
+                    val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip"
+                        putExtra(Intent.EXTRA_TITLE, name.replace(Regex("[^\\p{L}\\p{N} _-]"), "").ifBlank { "multfilm" } + ".zip")
+                    }
+                    try { startActivityForResult(i, REQ_EXPORT) } catch (e: Throwable) {}
+                }
                 else AlertDialog.Builder(this, R.style.DialogTheme).setTitle("Удалить «$name» навсегда?")
                     .setPositiveButton("Удалить") { _, _ -> dir.deleteRecursively(); refresh() }
                     .setNegativeButton("Отмена", null).show()
             }.show()
+    }
+
+    private var pendingExport: File? = null
+
+    companion object {
+        const val REQ_EXPORT = 11
+        const val REQ_IMPORT = 12
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val uri = data?.data ?: return
+        if (resultCode != RESULT_OK) return
+        try {
+            when (requestCode) {
+                REQ_EXPORT -> {
+                    val dir = pendingExport ?: return
+                    contentResolver.openOutputStream(uri)!!.use { os ->
+                        java.util.zip.ZipOutputStream(os).use { zip ->
+                            for (f in dir.listFiles() ?: emptyArray()) {
+                                if (!f.isFile || f.name.endsWith(".tmp")) continue
+                                zip.putNextEntry(java.util.zip.ZipEntry(f.name))
+                                f.inputStream().use { it.copyTo(zip) }
+                                zip.closeEntry()
+                            }
+                        }
+                    }
+                    android.widget.Toast.makeText(this, "Копия сохранена", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                REQ_IMPORT -> {
+                    val dir = File(Project.root(filesDir), "p" + System.currentTimeMillis())
+                    dir.mkdirs()
+                    contentResolver.openInputStream(uri)!!.use { ins ->
+                        java.util.zip.ZipInputStream(ins).use { zip ->
+                            while (true) {
+                                val e = zip.nextEntry ?: break
+                                if (e.isDirectory) continue
+                                val name = e.name.substringAfterLast('/').substringAfterLast('\\')
+                                if (name.isBlank() || name.startsWith(".")) continue
+                                File(dir, name).outputStream().use { zip.copyTo(it) }
+                            }
+                        }
+                    }
+                    if (!File(dir, "project.json").exists()) {
+                        dir.deleteRecursively()
+                        android.widget.Toast.makeText(this, "Это не копия проекта Мультастудии", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                        android.widget.Toast.makeText(this, "Проект открыт", android.widget.Toast.LENGTH_SHORT).show()
+                        refresh()
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            android.widget.Toast.makeText(this, "Ошибка: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun newProjectDialog() {

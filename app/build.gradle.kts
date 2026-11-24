@@ -11,14 +11,24 @@ android {
         applicationId = "ru.leon.multastudia"
         minSdk = 21
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.2"
+    }
+
+    // Постоянный ключ подписи: благодаря ему новые версии ставятся поверх старых
+    signingConfigs {
+        create("fixed") {
+            storeFile = file("multastudia.jks")
+            storePassword = "multastudia"
+            keyAlias = "multastudia"
+            keyPassword = "multastudia"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("fixed")
         }
     }
     compileOptions {
