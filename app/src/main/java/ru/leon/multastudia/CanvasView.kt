@@ -982,7 +982,7 @@ class CanvasView(ctx: Context, private val p: Project, private val host: CanvasH
                     mode = if (beginXf(e.x, e.y)) Mode.XF_DRAG else Mode.XF_DRAG
                     return true
                 }
-                if (sel == null && host.currentLayer().isRig) { host.onHint("Это слой-персонаж: включи «Позу» в «⋯», а рисуй на обычном слое"); mode = Mode.DONE; return true }
+                if (sel == null && host.currentLayer().isRig) { host.onHint("Это слой-персонаж. Раскрасить кусочки: «Слой» → долгое нажатие → «Мастерская» → кусочек → «Рисовать / залить». Двигать — «Поза» в «⋯»"); mode = Mode.DONE; return true }
                 val sl = sel
                 if (sl != null) {
                     val hnd = hitHandle(e.x, e.y)

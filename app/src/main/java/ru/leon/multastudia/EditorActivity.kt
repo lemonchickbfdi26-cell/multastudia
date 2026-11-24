@@ -609,7 +609,7 @@ class EditorActivity : Activity(), CanvasHost {
 
     private fun openWorkshop(l: Layer) {
         if (!l.isRig) return
-        RigWorkshop(this, p, l, { cb -> pickImageFor(cb) }) {
+        RigWorkshop(this, p, l, { cb -> pickImageFor(cb) }, cv.brush) {
             p.invalidateAllPreviews(); p.saveMeta(); cv.invalidate(); refreshThumbsLazy()
         }.show()
     }

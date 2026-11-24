@@ -27,6 +27,7 @@ class RigWorkshop(
     private val p: Project,
     private val layer: Layer,
     private val pickImage: ((Bitmap) -> Unit) -> Unit,
+    private val brush: BrushSettings,
     private val onChanged: () -> Unit
 ) {
     private val rig = layer.rig!!
@@ -216,6 +217,18 @@ class RigWorkshop(
 
     private fun addEditor(pt: Part) {
         val box = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(ctx.dp(6f), 0, ctx.dp(6f), ctx.dp(10f)) }
+        box.addView(ctx.label("🎨  Рисовать / залить", 15f, Color.WHITE).apply {
+            gravity = Gravity.CENTER; background = rounded(C.ACCENT, ctx.dp(12f).toFloat())
+            setPadding(ctx.dp(10f), ctx.dp(10f), ctx.dp(10f), ctx.dp(10f))
+            setOnClickListener {
+                val src = pt.bmp ?: return@setOnClickListener
+                SpriteEditor(ctx, src, brush) { nb ->
+                    pt.bmp = nb
+                    p.savePart(layer.id, pt)
+                    changed(); rebuildParts()
+                }.show()
+            }
+        }, lp(MATCH, WRAP).apply { bottomMargin = ctx.dp(8f) })
         val bmp = pt.bmp
         val probe = Part(0, pt.bone, pt.view).apply { bendy = pt.bendy }
         if (bmp != null) RigRender.autoFit(probe, bmp, rig.bones())
