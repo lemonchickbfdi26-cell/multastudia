@@ -122,7 +122,7 @@ object ColorPicker {
         top.addView(View(ctx), lp(ctx.dp(10f), 1))
         top.addView(ColorDot(ctx, start).apply { setOnClickListener { Color.colorToHSV(start, hsv); alpha = Color.alpha(start) / 255f; refreshAll() } }, lp(ctx.dp(46f), ctx.dp(46f)))
         newDot = ColorDot(ctx, start).apply { selected2 = true }
-        newDot.setOnClickListener { val c = color(); addRecent(c); save(ctx); onPick(c); dlg.dismiss() }
+        newDot.setOnClickListener { dlg.dismiss() }
         top.addView(newDot, lp(ctx.dp(52f), ctx.dp(52f)))
         root.addView(top, lp(MATCH, WRAP))
 
@@ -162,7 +162,7 @@ object ColorPicker {
         body.addView(recentHead)
         val recentRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         body.addView(recentRow)
-        body.addView(ctx.label("Нажми на большой кружок справа сверху — цвет выбран. Долгое нажатие на цвет в своей палитре — удалить.", 12f, C.DIM).apply { setPadding(0, ctx.dp(12f), 0, 0) })
+        body.addView(ctx.label("Выбранный цвет сохраняется сам при выходе. Долгое нажатие на цвет в своей палитре — удалить.", 12f, C.DIM).apply { setPadding(0, ctx.dp(12f), 0, 0) })
 
         fun dot(c: Int, onLong: (() -> Unit)?): View = ColorDot(ctx, c).apply {
             setOnClickListener { Color.colorToHSV(c, hsv); alpha = Color.alpha(c) / 255f; refreshAll() }
@@ -205,6 +205,12 @@ object ColorPicker {
         val scroll = ScrollView(ctx); scroll.addView(body)
         root.addView(scroll, lp(MATCH, 0, 1f))
         dlg.setContentView(root)
+        // как во Флиппе: выбранный цвет сохраняется при любом выходе (крестик, «назад», кружок)
+        dlg.setOnDismissListener {
+            val c = color()
+            if (c != start) { addRecent(c); save(ctx) }
+            onPick(c)
+        }
         refreshAll(); rebuildPal()
         dlg.show()
     }
