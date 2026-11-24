@@ -128,17 +128,30 @@ object Skel {
 
     /** Цепочка костей, по которой гнётся одна картинка (рука, нога, хвост). */
     fun chain(bs: List<B>, b: Int): List<Int> {
-        val cc = bs[b].chainChild
-        if (cc >= 0) return listOf(b, cc)
-        if (!bs[b].extra) return listOf(b)
+        val target = bs[b].chainChild
+        if (!bs[b].extra && target < 0) return listOf(b)
         val out = arrayListOf(b)
         var cur = b
-        while (out.size < 16) {
-            val kids = bs.indices.filter { bs[it].parent == cur && atParentTail(bs, it) }
+        while (out.size < 24) {
+            // дальше по цепочке идём через свои кости и через «родное» продолжение (предплечье, голень)
+            val kids = bs.indices.filter { bs[it].parent == cur && atParentTail(bs, it) && (bs[it].extra || it == target) }
             if (kids.size != 1) break
             cur = kids[0]; out.add(cur)
         }
         return out
+    }
+
+    /** Порядок расчёта: родитель всегда раньше ребёнка. */
+    fun order(bs: List<B>): IntArray {
+        val out = ArrayList<Int>(bs.size); val seen = BooleanArray(bs.size)
+        fun visit(b: Int, depth: Int) {
+            if (seen[b] || depth > bs.size) return
+            val pa = bs[b].parent
+            if (pa >= 0 && pa < bs.size) visit(pa, depth + 1)
+            if (!seen[b]) { seen[b] = true; out.add(b) }
+        }
+        for (b in bs.indices) visit(b, 0)
+        return out.toIntArray()
     }
 
     fun canBend(bs: List<B>, b: Int) = chain(bs, b).size >= 2
@@ -338,19 +351,46 @@ class Rig {
         changed()
     }
 
-    /** Удалить свою кость вместе с тем, что на ней висит. */
+    /** Новый сустав посередине кости: кость делится на две. */
+    fun splitBone(b: Int): Int {
+        val bs = bones()
+        if (bs.size >= Skel.MAX) return -1
+        val old = bs[b]
+        val mid = V3.lerp(old.head, old.tail, 0.5f)
+        putBone(b, Skel.B(old.title, old.parent, old.head, mid, old.rigid, old.chainChild, old.extra))
+        val c = bs.size
+        extra.add(Skel.B(old.title + " (2)", b, mid, old.tail, extra = true))
+        // всё, что висело на конце, теперь висит на новой половинке
+        for (i in bs.indices) if (i != b && bs[i].parent == b && (bs[i].head - old.tail).len() < 1f) {
+            val e = bs[i]
+            putBone(i, Skel.B(e.title, c, e.head, e.tail, e.rigid, e.chainChild, e.extra))
+        }
+        changed()
+        return c
+    }
+
+    /** Удалить свою кость вместе с тем, что на ней висит (кости шаблона не удаляются, а перецепляются). */
     fun removeBone(b: Int) {
         val bs = bones()
         if (b < Skel.base.size) return
         val dead = HashSet<Int>(); dead.add(b)
         var grew = true
-        while (grew) { grew = false; for (i in bs.indices) if (i !in dead && bs[i].parent in dead) { dead.add(i); grew = true } }
+        while (grew) { grew = false; for (i in bs.indices) if (i >= Skel.base.size && i !in dead && bs[i].parent in dead) { dead.add(i); grew = true } }
+        fun alive(x: Int): Int { var a = x; while (a in dead) a = bs[a].parent; return a }
         val map = IntArray(bs.size) { -1 }
         var n = 0
         for (i in bs.indices) if (i !in dead) map[i] = n++
+        // кости шаблона, висевшие на удалённых, цепляем к ближайшему живому предку
+        for (i in Skel.base.indices) {
+            val e = bs[i]
+            if (e.parent >= Skel.base.size || e.parent in dead) {
+                val np = map[alive(e.parent)]
+                if (np != e.parent) over[i] = Skel.B(e.title, np, e.head, e.tail, e.rigid, e.chainChild)
+            }
+        }
         val newExtra = ArrayList<Skel.B>()
         for (i in Skel.base.size until bs.size) if (i !in dead) {
-            val e = bs[i]; newExtra.add(Skel.B(e.title, map[e.parent], e.head, e.tail, extra = true))
+            val e = bs[i]; newExtra.add(Skel.B(e.title, map[alive(e.parent)], e.head, e.tail, extra = true))
         }
         extra.clear(); extra.addAll(newExtra)
         parts.removeAll { it.bone in dead }
@@ -366,7 +406,7 @@ class Rig {
     fun toJson(): JSONObject {
         val pa = JSONArray(); for (p in parts) pa.put(p.toJson())
         val ex = JSONArray(); for (b in extra) ex.put(b.toJson())
-        val ov = JSONArray(); for ((i, b) in over) ov.put(JSONObject().put("i", i).put("h", b.head.toJson()).put("e", b.tail.toJson()).put("t", b.title))
+        val ov = JSONArray(); for ((i, b) in over) ov.put(JSONObject().put("i", i).put("h", b.head.toJson()).put("e", b.tail.toJson()).put("t", b.title).put("p", b.parent))
         val o = JSONObject().put("parts", pa).put("track", track.toJson(bones().size)).put("next", nextPartId).put("extra", ex).put("base", ov)
         home?.let { o.put("home", JSONArray().put(it[0].toDouble()).put(it[1].toDouble()).put(it[2].toDouble())) }
         return o
@@ -384,7 +424,7 @@ class Rig {
                 val j = ov.getJSONObject(i); val idx = j.getInt("i")
                 if (idx !in Skel.base.indices) continue
                 val b = Skel.base[idx]
-                r.over[idx] = Skel.B(j.optString("t", b.title), b.parent, V3.fromJson(j.getJSONArray("h")), V3.fromJson(j.getJSONArray("e")), b.rigid, b.chainChild)
+                r.over[idx] = Skel.B(j.optString("t", b.title), j.optInt("p", b.parent), V3.fromJson(j.getJSONArray("h")), V3.fromJson(j.getJSONArray("e")), b.rigid, b.chainChild)
             }
             o.optJSONArray("home")?.let { h -> r.home = floatArrayOf(h.getDouble(0).toFloat(), h.getDouble(1).toFloat(), h.getDouble(2).toFloat()) }
             r.track = PoseTrack.fromJson(o.optJSONArray("track"))
@@ -409,7 +449,7 @@ object RigMath {
         val n = bs.size
         val head = Array(n) { V3() }; val tail = Array(n) { V3() }; val world = Array(n) { Q() }
         val g = p.global()
-        for (b in 0 until n) {
+        for (b in Skel.order(bs)) {
             val sb = bs[b]
             if (sb.parent < 0) {
                 world[b] = (g * p.rot[b]).norm()

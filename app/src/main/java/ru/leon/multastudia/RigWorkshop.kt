@@ -175,8 +175,17 @@ class RigWorkshop(
         val b = bs[bone]
         val head = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(ctx.label(b.title, 15f).apply { setPadding(0, ctx.dp(4f), 0, ctx.dp(6f)) }, lp(0, WRAP, 1f))
-        head.addView(ctx.label("Настроить кость", 13f, C.ACCENT).apply {
+        head.addView(ctx.label("Настроить", 13f, C.ACCENT).apply {
             setPadding(ctx.dp(8f), ctx.dp(6f), 0, ctx.dp(6f)); setOnClickListener { boneDialog(bone) }
+        })
+        head.addView(ctx.label("＋ Сустав", 13f, 0xFF4DD0E1.toInt()).apply {
+            setPadding(ctx.dp(12f), ctx.dp(6f), 0, ctx.dp(6f))
+            setOnClickListener {
+                val nb = rig.splitBone(bone)
+                if (nb < 0) { android.widget.Toast.makeText(ctx, "Слишком много костей", android.widget.Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                android.widget.Toast.makeText(ctx, "Кость разделена: новый сустав посередине", android.widget.Toast.LENGTH_SHORT).show()
+                changed(); rebuildChips(); rebuildParts()
+            }
         })
         partsBox.addView(head)
         val list = rig.parts.filter { it.bone == bone }
