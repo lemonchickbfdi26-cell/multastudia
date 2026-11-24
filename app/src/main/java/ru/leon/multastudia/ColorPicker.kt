@@ -82,6 +82,7 @@ object ColorPicker {
         val views = ArrayList<View>()
         lateinit var newDot: ColorDot
         lateinit var refreshAll: () -> Unit
+        lateinit var rebuildPal: () -> Unit
 
         fun color() = Color.HSVToColor((alpha * 255).toInt().coerceIn(0, 255), hsv)
 
@@ -114,7 +115,7 @@ object ColorPicker {
                     if (palettes.isEmpty()) palettes.add(Palette("Палитра 1", ArrayList()))
                     cur = 1
                 }
-                palettes[cur - 1].colors.add(color()); save(ctx); refreshAll()
+                palettes[cur - 1].colors.add(color()); save(ctx); rebuildPal()
                 Toast.makeText(ctx, "Добавлено в «${palettes[cur - 1].name}»", Toast.LENGTH_SHORT).show()
             }
         })
@@ -152,7 +153,7 @@ object ColorPicker {
         palHead.addView(palName, lp(0, WRAP, 1f))
         palHead.addView(ctx.label("Палитры ▾", 14f, C.ACCENT).apply {
             setPadding(ctx.dp(10f), ctx.dp(6f), 0, ctx.dp(6f))
-            setOnClickListener { paletteMenu(ctx) { save(ctx); refreshAll() } }
+            setOnClickListener { paletteMenu(ctx) { save(ctx); rebuildPal() } }
         })
         body.addView(palHead)
         val swatches = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
@@ -198,13 +199,13 @@ object ColorPicker {
         refreshAll = {
             newDot.color = color(); newDot.invalidate()
             for (v in views) v.invalidate()
-            rebuildSwatches()
         }
+        rebuildPal = { rebuildSwatches() }
 
         val scroll = ScrollView(ctx); scroll.addView(body)
         root.addView(scroll, lp(MATCH, 0, 1f))
         dlg.setContentView(root)
-        refreshAll()
+        refreshAll(); rebuildPal()
         dlg.show()
     }
 
